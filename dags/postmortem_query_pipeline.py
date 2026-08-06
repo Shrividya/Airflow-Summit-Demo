@@ -1,23 +1,11 @@
-"""
-Answer a user's question against the PRODUCTION postmortem index, with
-query-time guardrails on both ends of the LLM call.
-
-Trigger per-question:
+"""Answer a user's question against the PRODUCTION postmortem index, with
+query-time guardrails on both ends of the LLM call: check_input_safety
+blocks prompt-injection/off-topic questions before retrieval, and
+check_groundedness blocks an answer whose claims aren't supported by the
+retrieved context (see data/postmortems/INC-2350-support-ticket-leak.md
+for a prompt-injection example this catches). `src/query.py` triggers this
+DAG per-question:
     airflow dags trigger postmortem_query_pipeline --conf '{"question": "..."}'
-
-`src/query.py` is a thin CLI wrapper around that trigger command.
-
-Task graph:
-  1. check_input_safety   -- @task.llm, structured InputSafetyVerdict.
-                              Blocks prompt-injection / off-topic questions
-                              before any retrieval happens.
-  2. retrieve_context      -- plain @task against the PROD collection only.
-  3. generate_answer       -- @task.llm.
-  4. check_groundedness    -- @task.llm, structured GroundednessVerdict.
-                              Blocks an answer whose claims aren't supported
-                              by the retrieved context (see
-                              data/postmortems/INC-2350-support-ticket-leak.md
-                              for a prompt-injection example this catches).
 """
 from __future__ import annotations
 

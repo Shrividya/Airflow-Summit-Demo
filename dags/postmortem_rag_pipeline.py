@@ -1,22 +1,11 @@
-"""
-Ingest incident postmortems into a quality-gated, guardrailed RAG index.
-
-Airflow 3 features used here:
-  * TaskFlow (`@task`) for all business logic
-  * Assets (`Asset`, `outlets=`) for the staging/prod indices
-  * `rerun_with_latest_version=False` so reruns replay the exact
-    chunking/embedding code of the original run
-  * apache-airflow-providers-common-ai's `@task.llm`, dynamically mapped
-    one task per golden question, for generation and the groundedness
-    guardrail
-
-Checks run against STAGING before promotion (src/evaluate.py):
-  1. Chunking regressions       -> check_chunking_regression
-  2. Embedding model drift      -> check_embedding_model_drift
-  3. Partial re-index states    -> check_partial_reindex
-  4. PII/secret hard block      -> check_pii_hard_block
-  5. Retrieval quality decay    -> check_retrieval_quality (RAGAS)
-  6. Ungrounded answers         -> check_answer_guardrails
+"""Ingest incident postmortems into a quality-gated, guardrailed RAG index.
+Uses TaskFlow, Assets for the staging/prod indices, `rerun_with_latest_version=False`
+so reruns replay the original chunking/embedding code, and common-ai's
+`@task.llm` (mapped one task per golden question) for generation and the
+groundedness guardrail. Gate checks against STAGING before promotion live
+in src/evaluate.py: chunking regression, embedding model drift, partial
+re-index, PII/secret hard block, RAGAS retrieval quality, and ungrounded
+answers.
 """
 from __future__ import annotations
 
@@ -139,8 +128,6 @@ with DAG(
 
         pii_result = next(r for r in results if r.name == "pii_hard_block")
         if not pii_result.passed:
-            # Secret/credential leaks are a security incident, not a routine
-            # quality regression -- route to the urgent review path.
             return "security_incident_review"
         return "quality_gate_review"
 
@@ -151,9 +138,6 @@ with DAG(
         promote_staging_to_prod()
         return "promoted"
 
-    # HITL: a secret/credential was found in staged content. This is treated
-    # as a security incident -- a human must confirm the secret has been
-    # rotated/redacted before the source postmortem is re-ingested.
     security_incident_review = ApprovalOperator(
         task_id="security_incident_review",
         subject="URGENT: secret/credential leak detected in postmortem RAG staging index",
@@ -177,9 +161,6 @@ with DAG(
         ),
     )
 
-    # HITL: a non-security quality gate (chunking/drift/reindex/RAGAS/answer
-    # guardrails) failed. Lower urgency than a secret leak, but still needs a
-    # human to look before the next promotion attempt.
     quality_gate_review = ApprovalOperator(
         task_id="quality_gate_review",
         subject="Postmortem RAG staging promotion blocked by a quality gate",

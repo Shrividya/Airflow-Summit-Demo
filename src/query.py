@@ -1,14 +1,10 @@
-"""
-CLI: trigger the postmortem_query_pipeline DAG for a question.
+"""CLI: trigger the postmortem_query_pipeline DAG for a question.
 
-Usage:
     python -m src.query "What caused the checkout latency spike?"
 
-Thin wrapper around `airflow dags trigger` -- answering a question runs as
-its own DAG run against the PROD collection, not a plain Python call.
-
-Watch the answer in the Airflow UI (Grid -> this run -> deliver_answer
-task's logs) or tail logs from the CLI:
+Answering a question is a DAG run against the PROD collection, not a plain
+Python call -- watch the answer in the Airflow UI (Grid -> this run ->
+deliver_answer task's logs) or:
 
     airflow tasks logs postmortem_query_pipeline <run_id> deliver_answer
 """

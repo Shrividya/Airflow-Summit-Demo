@@ -1,21 +1,10 @@
-"""
-Quality gates for the postmortem RAG pipeline. Run against the STAGING
-index before it's promoted to prod:
-
-1. Structural checks (no LLM calls) -- chunking regressions, embedding
-   model drift, partial re-index, by diffing this run's IngestManifest
-   against the previous one.
-2. RAGAS evaluation (LLM-judged, scored against a floor) -- faithfulness /
-   context precision / context recall on the golden set in
-   data/eval_dataset.jsonl.
-3. Guardrails (hard pass/fail) -- check_pii_hard_block and
-   check_answer_guardrails. These don't average away like the RAGAS
-   floors: one hard-blocked secret or one ungrounded answer fails the
-   gate outright.
-
-Generation and groundedness verdicts are produced upstream by the DAG's
-mapped `@task.llm` tasks (dags/postmortem_rag_pipeline.py); this module
-just scores/branches on the results.
+"""Quality gates for the postmortem RAG pipeline, run against the STAGING
+index before promotion: structural checks (chunking/embedding drift,
+partial re-index) diffed against the previous IngestManifest, RAGAS
+evaluation scored against a floor, and guardrails (check_pii_hard_block,
+check_answer_guardrails) that fail outright rather than averaging away.
+Generation and groundedness verdicts come from the DAG's mapped `@task.llm`
+tasks (dags/postmortem_rag_pipeline.py); this module just scores/branches.
 """
 from __future__ import annotations
 
@@ -27,7 +16,8 @@ from typing import Optional
 
 from src.ingest import IngestManifest, CHROMA_PATH
 
-GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "claude-sonnet-5")
+GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "llama3.1")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 # allow chunk count/size to move by this much run-over-run before blocking
 MAX_CHUNK_COUNT_DRIFT_PCT = 0.25
@@ -151,7 +141,7 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
     from ragas import evaluate
     from ragas.metrics import faithfulness, context_precision, context_recall
     from ragas.llms import llm_factory
-    from anthropic import Anthropic
+    from openai import OpenAI
 
     questions = [r["question"] for r in rows]
     ground_truths = [r["ground_truth"] for r in rows]
@@ -165,8 +155,10 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
         "ground_truth": ground_truths,
     })
 
-    # wire ragas's LLM judge to the same Claude model used for generation
-    ragas_llm = llm_factory(GENERATION_MODEL, provider="anthropic", client=Anthropic())
+    # wire ragas's judge to the same local Ollama model used for generation
+    ragas_llm = llm_factory(
+        GENERATION_MODEL, provider="openai", client=OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+    )
     # ragas defaults to sending temperature=0.01 and top_p, both of which this model rejects
     if hasattr(ragas_llm, "model_args"):
         ragas_llm.model_args.pop("temperature", None)
