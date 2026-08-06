@@ -23,6 +23,8 @@ wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
+airflow.cfg
+airflow.db
 *.egg
 MANIFEST
 
@@ -179,3 +181,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+.DS_Store
+dags/.DS_Store
+Dags/.airflowignore

@@ -1,0 +1,17 @@
+chromadb>=0.5
+anthropic>=0.40
+voyageai>=0.3
+ragas>=0.2
+datasets>=2.19
+# Airflow's official LLM/agent provider (built on pydantic-ai). Powers
+# generation and the input-safety / groundedness guardrail tasks in both
+# DAGs -- see src/guardrails.py.
+apache-airflow-providers-common-ai[anthropic]>=0.1.0
+# Slack notifier for the security_incident_review HITL task in
+# postmortem_rag_pipeline.py (secret/credential leak alerts).
+apache-airflow-providers-slack>=8.0.0
+# ragas unconditionally imports langchain_community.chat_models.vertexai (an
+# unused legacy import path for us -- we only use ragas's anthropic llm_factory).
+# That module was removed in langchain-community 0.4.2, breaking ragas import
+# at all versions we tested (0.2.15-0.4.3). Pin to the last compatible release.
+langchain-community==0.4.1
