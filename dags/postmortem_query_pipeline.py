@@ -30,6 +30,7 @@ from airflow.sdk import DAG, Param, task
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.guardrails import (  # noqa: E402
+    CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
     INPUT_GUARDRAIL_SYSTEM_PROMPT,
     GroundednessVerdict,
@@ -53,7 +54,12 @@ with DAG(
     params={"question": Param("", type="string", description="The question to ask the postmortem RAG assistant.")},
 ):
 
-    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=INPUT_GUARDRAIL_SYSTEM_PROMPT, output_type=InputSafetyVerdict)
+    @task.llm(
+        llm_conn_id=LLM_CONN_ID,
+        system_prompt=INPUT_GUARDRAIL_SYSTEM_PROMPT,
+        output_type=InputSafetyVerdict,
+        agent_params=CACHED_INSTRUCTIONS_SETTINGS,
+    )
     def check_input_safety(question: str) -> str:
         return question
 
@@ -83,12 +89,17 @@ with DAG(
             ],
         }
 
-    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=GENERATION_SYSTEM_PROMPT)
+    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=GENERATION_SYSTEM_PROMPT, agent_params=CACHED_INSTRUCTIONS_SETTINGS)
     def generate_answer(retrieved: dict) -> str:
         context_block = "\n\n---\n\n".join(retrieved["contexts"])
         return f"Excerpts:\n{context_block}\n\nQuestion: {retrieved['question']}\nAnswer:"
 
-    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT, output_type=GroundednessVerdict)
+    @task.llm(
+        llm_conn_id=LLM_CONN_ID,
+        system_prompt=GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
+        output_type=GroundednessVerdict,
+        agent_params=CACHED_INSTRUCTIONS_SETTINGS,
+    )
     def check_groundedness(retrieved: dict, answer: str) -> str:
         context_block = "\n\n---\n\n".join(retrieved["contexts"])
         return f"Question: {retrieved['question']}\n\nContext:\n{context_block}\n\nAnswer:\n{answer}"

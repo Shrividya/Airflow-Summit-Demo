@@ -31,7 +31,11 @@ from airflow.providers.slack.notifications.slack_webhook import SlackWebhookNoti
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.guardrails import GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT, GroundednessVerdict  # noqa: E402
+from src.guardrails import (  # noqa: E402
+    CACHED_INSTRUCTIONS_SETTINGS,
+    GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
+    GroundednessVerdict,
+)
 
 SOURCE_DIR = os.environ.get("PM_RAG_SOURCE_DIR", "/usr/local/airflow/data/postmortems")
 EVAL_DATASET_PATH = os.environ.get("PM_RAG_EVAL_DATASET", "/usr/local/airflow/data/eval_dataset.jsonl")
@@ -87,7 +91,7 @@ with DAG(
             })
         return items
 
-    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=GENERATION_SYSTEM_PROMPT)
+    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=GENERATION_SYSTEM_PROMPT, agent_params=CACHED_INSTRUCTIONS_SETTINGS)
     def generate_eval_answer(item: dict) -> str:
         context_block = "\n\n---\n\n".join(item["contexts"])
         return f"Excerpts:\n{context_block}\n\nQuestion: {item['question']}\nAnswer:"
@@ -100,6 +104,7 @@ with DAG(
         llm_conn_id=LLM_CONN_ID,
         system_prompt=GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
         output_type=GroundednessVerdict,
+        agent_params=CACHED_INSTRUCTIONS_SETTINGS,
     )
     def check_groundedness(item: dict) -> str:
         context_block = "\n\n---\n\n".join(item["contexts"])
