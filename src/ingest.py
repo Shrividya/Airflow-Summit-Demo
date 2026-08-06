@@ -1,17 +1,13 @@
-"""
-Ingestion logic for the postmortem RAG pipeline. Framework-agnostic: the
-DAG in dags/postmortem_rag_pipeline.py calls these as plain functions
-inside @task-decorated functions, which keeps the logic unit-testable and
-reusable from the query CLI.
+"""Ingestion logic for the postmortem RAG pipeline. Plain functions, called
+from dags/postmortem_rag_pipeline.py's @task-decorated wrappers and from
+the query path, so it's testable and reusable outside Airflow.
 
-Vector store: Chroma, local/on-disk. Swap `get_chroma_client` for a hosted
-client in production.
+Chroma is local/on-disk (swap `get_chroma_client` for a hosted client in
+production). Embeddings use a local model served by Ollama (default
+`nomic-embed-text`) via its OpenAI-compatible endpoint; the model name is
+recorded on every chunk/collection for the embedding-model-drift gate.
 
-Embeddings: Voyage AI. The embedding model name is recorded as metadata on
-every chunk and at the collection level, which is what the
-embedding-model-drift quality gate checks against.
-
-Every source document is scanned for PII/secrets (src/guardrails.py) and
+Source documents are scanned for PII/secrets (src/guardrails.py) and
 redacted before chunking, so raw sensitive strings never reach the
 embedding API or the vector index.
 """
@@ -28,7 +24,8 @@ from typing import Optional
 
 import chromadb
 
-EMBEDDING_MODEL = os.environ.get("PM_RAG_EMBEDDING_MODEL", "voyage-3.5")
+EMBEDDING_MODEL = os.environ.get("PM_RAG_EMBEDDING_MODEL", "nomic-embed-text")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 CHUNK_SIZE = int(os.environ.get("PM_RAG_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.environ.get("PM_RAG_CHUNK_OVERLAP", "120"))
 CHROMA_PATH = os.environ.get("PM_RAG_CHROMA_PATH", "/tmp/postmortem-rag-chroma")
@@ -95,17 +92,16 @@ def load_source_documents(source_dir: str) -> dict[str, str]:
 
 
 def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
-    """Voyage's models are asymmetric: documents and queries are embedded
-    differently, so callers must say which side of the retrieval they're
-    on via `input_type`."""
+    """`input_type` ("document"/"query") is unused by nomic-embed-text but
+    kept in the signature for parity with asymmetric embedding APIs."""
     if not texts:
         raise ValueError("embed_texts called with an empty list of texts")
 
-    import voyageai
+    import openai
 
-    client = voyageai.Client()
-    resp = client.embed(texts, model=EMBEDDING_MODEL, input_type=input_type)
-    return resp.embeddings
+    client = openai.OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+    resp = client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+    return [d.embedding for d in resp.data]
 
 
 def get_chroma_client(path: str = CHROMA_PATH) -> "chromadb.ClientAPI":

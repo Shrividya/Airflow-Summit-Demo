@@ -1,17 +1,21 @@
 chromadb>=0.5
-anthropic>=0.40
-voyageai>=0.3
+# Ollama serves an OpenAI-compatible API, so generation, guardrails, the
+# RAGAS judge, and embeddings all go through the `openai` client pointed at
+# OLLAMA_BASE_URL instead of a real OpenAI account -- see src/ingest.py and
+# src/evaluate.py.
+openai>=1.0
 ragas>=0.2
 datasets>=2.19
 # Airflow's official LLM/agent provider (built on pydantic-ai). Powers
 # generation and the input-safety / groundedness guardrail tasks in both
-# DAGs -- see src/guardrails.py.
-apache-airflow-providers-common-ai[anthropic]>=0.1.0
+# DAGs -- see src/guardrails.py. The `openai` extra pulls in pydantic-ai's
+# OpenAI-compatible provider machinery, which the Ollama provider reuses.
+apache-airflow-providers-common-ai[openai]>=0.1.0
 # Slack notifier for the security_incident_review HITL task in
 # postmortem_rag_pipeline.py (secret/credential leak alerts).
 apache-airflow-providers-slack>=8.0.0
 # ragas unconditionally imports langchain_community.chat_models.vertexai (an
-# unused legacy import path for us -- we only use ragas's anthropic llm_factory).
+# unused legacy import path for us -- we only use ragas's openai llm_factory).
 # That module was removed in langchain-community 0.4.2, breaking ragas import
 # at all versions we tested (0.2.15-0.4.3). Pin to the last compatible release.
 langchain-community==0.4.1

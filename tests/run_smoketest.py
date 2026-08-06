@@ -1,8 +1,8 @@
 """
 Offline smoke test for the postmortem-rag project.
 
-Uses hand-written fake chromadb / anthropic / voyageai / datasets / ragas /
-airflow.sdk modules (see tests/fakes/) so src/ingest.py and src/evaluate.py
+Uses hand-written fake chromadb / openai / datasets / ragas / airflow.sdk
+modules (see tests/fakes/) so src/ingest.py and src/evaluate.py
 run end-to-end without network access or real dependencies. Not a
 substitute for running the real pipeline -- it only proves the Python
 logic itself (chunking, manifest diffing, gate branching, DAG wiring) is
@@ -17,13 +17,14 @@ import tempfile
 FAKES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakes")
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-sys.path.insert(0, FAKES_DIR)      # fake chromadb/anthropic/voyageai/datasets/ragas/airflow
+sys.path.insert(0, FAKES_DIR)      # fake chromadb/openai/datasets/ragas/airflow
 sys.path.insert(0, PROJECT_DIR)    # real src/
 
 CHROMA_TMP = tempfile.mkdtemp(prefix="pm-rag-smoketest-")
 os.environ["PM_RAG_CHROMA_PATH"] = CHROMA_TMP
-os.environ["PM_RAG_EMBEDDING_MODEL"] = "voyage-3.5"
-os.environ["PM_RAG_GENERATION_MODEL"] = "claude-sonnet-5"
+os.environ["PM_RAG_EMBEDDING_MODEL"] = "nomic-embed-text"
+os.environ["PM_RAG_GENERATION_MODEL"] = "llama3.1"
+os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434/v1"
 
 PASS = []
 FAIL = []
@@ -47,7 +48,7 @@ manifest1 = build_staging_index(source_dir, run_id="run-1")
 check("5 source docs loaded", manifest1.source_doc_count == 5, f"got {manifest1.source_doc_count}")
 check("chunks were produced", manifest1.chunk_count > 0, f"got {manifest1.chunk_count}")
 check("avg chunk size is reasonable (<=900 chars)", manifest1.avg_chunk_chars <= 900, f"got {manifest1.avg_chunk_chars}")
-check("embedding model recorded", manifest1.embedding_model == "voyage-3.5")
+check("embedding model recorded", manifest1.embedding_model == "nomic-embed-text")
 check("all 5 doc hashes recorded", len(manifest1.source_doc_hashes) == 5, f"got {list(manifest1.source_doc_hashes)}")
 
 print("\n=== 1b. ingest-time PII/secret guardrail ===")
@@ -127,7 +128,7 @@ record_manifest_history(manifest2)
 print("\n=== 4. simulated embedding model drift should be CAUGHT ===")
 import copy
 drifted = copy.deepcopy(manifest2)
-drifted.embedding_model = "voyage-3-large"  # simulate a silent bump
+drifted.embedding_model = "nomic-embed-text-v2"  # simulate a silent bump
 r_drift = check_embedding_model_drift(drifted)
 check("drifted embedding model is correctly rejected", not r_drift.passed, r_drift.detail)
 

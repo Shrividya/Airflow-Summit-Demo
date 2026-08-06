@@ -20,27 +20,44 @@ src/query.py                      thin CLI wrapper that triggers postmortem_quer
 data/postmortems/*.md             5 synthetic sample postmortems (source corpus)
 data/eval_dataset.jsonl           golden question set used by the RAGAS gate
 tests/run_smoketest.py            offline logic smoke test (see below)
-tests/fakes/                      fake chromadb/anthropic/voyageai/datasets/ragas/airflow.sdk used by the smoke test
+tests/fakes/                      fake chromadb/openai/datasets/ragas/airflow.sdk used by the smoke test
 ```
 
 ### Apache Airflow's common.ai provider
 
 Generation and both LLM-judged guardrail checks run through
 [`apache-airflow-providers-common-ai`](https://airflow.apache.org/docs/apache-airflow-providers-common-ai/stable/)
-(built on pydantic-ai) instead of a raw `anthropic` client call in a plain
-Python function. That's a deliberate architectural choice, not just a
-dependency swap: `@task.llm` only produces a real, observable, retryable
-task instance when it's part of a DAG's task graph, so every LLM call in
-this repo -- generation, input-safety judging, groundedness judging -- now
-shows up as its own task in the Airflow UI with its own logs and retries,
-including the mapped one-per-golden-question tasks in the ingestion DAG.
+(built on pydantic-ai) instead of a raw client call in a plain Python
+function. That's a deliberate architectural choice, not just a dependency
+swap: `@task.llm` only produces a real, observable, retryable task instance
+when it's part of a DAG's task graph, so every LLM call in this repo --
+generation, input-safety judging, groundedness judging -- now shows up as
+its own task in the Airflow UI with its own logs and retries, including the
+mapped one-per-golden-question tasks in the ingestion DAG.
 
-Configure the model via a `pydanticai` connection (see `.env` for the
-local-dev version, which reuses `ANTHROPIC_API_KEY`):
+This project runs entirely on **open-source models served locally by
+[Ollama](https://ollama.com)** -- no API keys, no cloud calls. Generation,
+both guardrail judges, and the RAGAS eval judge all use the same local
+model (default `llama3.1`) through pydantic-ai's built-in Ollama provider;
+embeddings use a separate local embedding model (default
+`nomic-embed-text`) via Ollama's OpenAI-compatible endpoint. Install Ollama
+and pull both models once:
 
 ```bash
-export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "password": "'"$ANTHROPIC_API_KEY"'", "extra": {"model": "anthropic:claude-sonnet-5"}}'
+ollama pull llama3.1
+ollama pull nomic-embed-text
 ```
+
+Configure the model via a `pydanticai` connection:
+
+```bash
+export OLLAMA_BASE_URL=http://localhost:11434/v1
+export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$OLLAMA_BASE_URL"'", "extra": {"model": "ollama:llama3.1"}}'
+```
+
+Swap `llama3.1` / `nomic-embed-text` for any other model you've pulled via
+`ollama pull` (e.g. `qwen2.5`, `mistral`) by changing the connection's
+`model` and the `PM_RAG_EMBEDDING_MODEL` env var -- no code changes needed.
 
 ### Guardrails vs. quality gates
 
@@ -122,7 +139,7 @@ loudly, and prod keeps serving the last known-good index.
 
 `tests/run_smoketest.py` runs the real ingestion, quality-gate, and
 guardrail logic end-to-end against hand-written fake `chromadb` /
-`anthropic` / `voyageai` / `datasets` / `ragas` / `airflow.sdk` modules (in
+`openai` / `datasets` / `ragas` / `airflow.sdk` modules (in
 `tests/fakes/`). It proves the Python logic itself — chunking, PII
 redaction, manifest diffing, all structural and guardrail gates (including
 their *failure* paths), the RAGAS-gate wiring, promotion, the query CLI's
@@ -144,9 +161,13 @@ plugging in an actual corpus.
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=...       # used for generation, guardrails, and RAGAS's judge LLM (Claude)
-export VOYAGE_API_KEY=...          # used for embeddings (Anthropic's recommended embeddings partner)
-export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "password": "'"$ANTHROPIC_API_KEY"'", "extra": {"model": "anthropic:claude-sonnet-5"}}'
+
+# Install Ollama (https://ollama.com) and pull the models this project uses:
+ollama pull llama3.1          # generation + guardrail judges + RAGAS judge
+ollama pull nomic-embed-text  # embeddings
+
+export OLLAMA_BASE_URL=http://localhost:11434/v1
+export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$OLLAMA_BASE_URL"'", "extra": {"model": "ollama:llama3.1"}}'
 
 # Point Airflow at this project's dags/ folder, then trigger
 # postmortem_rag_pipeline from the UI or:
