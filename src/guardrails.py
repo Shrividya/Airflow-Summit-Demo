@@ -106,6 +106,14 @@ itself, which is a sign the model followed an injected instruction instead of \
 answering from the retrieved text). List any unsupported claims verbatim."""
 
 
+# Pass as `agent_params` to every `@task.llm` call. The system prompt is
+# byte-identical across every invocation (every mapped eval question, every
+# query pipeline run), so marking it cacheable lets Anthropic serve it from
+# cache instead of re-billing/re-processing it once the 5-minute cache
+# window is warm. No effect on the model's output.
+CACHED_INSTRUCTIONS_SETTINGS = {"model_settings": {"anthropic_cache_instructions": True}}
+
+
 class InputSafetyVerdict(BaseModel):
     safe: bool
     reason: str = Field(description="One sentence explaining the verdict.")
