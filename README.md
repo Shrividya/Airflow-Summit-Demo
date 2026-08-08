@@ -1,311 +1,108 @@
 # Postmortem RAG: Quality-Gated Ingestion on Airflow 3
 
-Reference implementation for the Airflow Summit 2026
-
-**Scenario:** incident postmortems are the source corpus. Engineers query
-the resulting RAG index to understand past incidents, root causes, and
-remediations instead of relying on tribal knowledge or a wiki search that
-misses the relevant doc. The pipeline's job is to keep that index both
-fresh and *correct* -- a green DAG run is necessary but not sufficient.
+Reference implementation for Airflow Summit 2026. Incident postmortems are
+ingested into a RAG index that engineers query for root causes and
+remediations. The pipeline keeps that index fresh *and* correct — a green
+DAG run alone isn't enough, so every promotion to prod passes through
+quality gates, guardrails, and (on failure) human review.
 
 ## Layout
 
 ```
-dags/postmortem_rag_pipeline.py   Airflow 3 DAG: TaskFlow + Assets + quality gates + guardrails + human-in-the-loop review
-dags/postmortem_query_pipeline.py Airflow 3 DAG: answer a question against PROD, with query-time guardrails
-src/ingest.py                     chunking, PII/secret redaction, embedding, Chroma staging/prod collections
-src/evaluate.py                   the structural + RAGAS quality gates (RAGAS judge responses disk-cached), plus the guardrail gates
-src/guardrails.py                 ingest-time PII/secret scanner + query-time LLM guardrail models/prompts + shared agent_params
-src/query.py                      thin CLI wrapper that triggers postmortem_query_pipeline
-streamlit_app.py                  local UI: triggers postmortem_query_pipeline over the REST API, polls for the answer
-data/postmortems/*.md             5 synthetic sample postmortems (source corpus)
-data/eval_dataset.jsonl           golden question set used by the RAGAS gate
-tests/run_smoketest.py            offline logic smoke test (see below)
-tests/test_query_results.py       unit test for the SQLite result writer streamlit_app.py polls
-tests/dags/test_dag_example.py    generic DAG-integrity test (tags, retries, no import errors)
-tests/fakes/                      fake chromadb/openai/datasets/ragas/airflow.sdk/instructor used by the smoke test
+dags/postmortem_rag_pipeline.py    Ingest DAG: build → gates/guardrails → promote or human review
+dags/postmortem_query_pipeline.py  Query DAG: retrieve → generate → guardrails → answer
+src/ingest.py                      chunking, PII/secret redaction, embedding, Chroma staging/prod
+src/evaluate.py                    quality gates (structural + RAGAS, judge responses cached)
+src/guardrails.py                  PII/secret scanner + LLM guardrail prompts/schemas
+src/query.py                       CLI: triggers postmortem_query_pipeline
+streamlit_app.py                   local UI for the same query DAG
+data/postmortems/*.md              sample source corpus
+data/eval_dataset.jsonl            golden question set for the RAGAS gate
+tests/                             offline smoke test + unit tests (see below)
 ```
 
-### Apache Airflow's common.ai provider
+## How it works
 
-Generation and both LLM-judged guardrail checks run through
-[`apache-airflow-providers-common-ai`](https://airflow.apache.org/docs/apache-airflow-providers-common-ai/stable/)
-(built on pydantic-ai) instead of a raw client call in a plain Python
-function. That's a deliberate architectural choice, not just a dependency
-swap: `@task.llm` only produces a real, observable, retryable task instance
-when it's part of a DAG's task graph, so every LLM call in this repo --
-generation, input-safety judging, groundedness judging -- now shows up as
-its own task in the Airflow UI with its own logs and retries, including the
-mapped one-per-golden-question tasks in the ingestion DAG. Every `@task.llm`
-call shares `CACHED_INSTRUCTIONS_SETTINGS` from `src/guardrails.py`
-(`agent_params={"retries": 2, "model_settings": {"temperature": 0}}`), so
-structured-output retries and determinism stay consistent across generation
-and both guardrail checks.
+**Ingest** (`postmortem_rag_pipeline`): chunk + embed postmortems into a
+staging Chroma collection, generate answers to a golden question set, then
+run quality gates against staging. All gates pass → promote to prod. Any
+gate fails → route to a human-approval task (`ApprovalOperator`) instead of
+retrying blindly; a PII/secret leak also pages Slack. Either way, the run
+still fails loudly and prod keeps serving the last known-good index.
 
-This project runs on **open-source models hosted by [Hugging Face's
-Inference Providers](https://huggingface.co/docs/inference-providers)** --
-you need an [HF API token](https://huggingface.co/settings/tokens), but no
-GPU of your own and no local model server. Generation and the input-safety
-guardrail run on `pydanticai_default` (default
-`meta-llama/Llama-3.3-70B-Instruct:novita`); the groundedness guardrail
-runs on its own connection, `pydanticai_groundedness` (same default model,
-but kept separate since claim-attribution judging benefits from a
-strong/large model independently of whatever generation model you pick).
-The RAGAS eval judge (`PM_RAG_GENERATION_MODEL`) uses the same default
-model directly via `instructor`'s `Mode.TOOLS` wrapper around the `openai`
-client (novita, the router provider serving Llama-3.3-70B-Instruct here,
-doesn't support `response_format: json_object`/`json_schema`, but does
-support function-calling, so `instructor` uses tool calls instead).
-Embeddings use a separate hosted embedding model (default
-`sentence-transformers/all-MiniLM-L6-v2`) via `huggingface_hub`'s
-`InferenceClient`.
+**Query** (`postmortem_query_pipeline`): a question is checked for
+safety/prompt-injection before retrieval, an answer is generated from
+retrieved context, and the answer is checked for groundedness before
+delivery. Triggered via `python -m src.query "..."` or `streamlit_app.py`.
 
-Generate a token at https://huggingface.co/settings/tokens, then:
+Both DAGs run LLM calls through `apache-airflow-providers-common-ai`
+(`@task.llm`), so generation and every guardrail check show up as its own
+observable, retryable task in the Airflow UI — not a black-box function
+call.
 
-```bash
-export HF_TOKEN=hf_your_token_here
-export HF_BASE_URL=https://router.huggingface.co/v1
-export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
-export AIRFLOW_CONN_PYDANTICAI_GROUNDEDNESS='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
-```
+| Gate/guardrail | Catches |
+|---|---|
+| `check_chunking_regression` | chunk count/size drift vs. last passing run |
+| `check_embedding_model_drift` | embedding model changed since last passing run |
+| `check_partial_reindex` | source docs missing from the staging manifest |
+| `check_pii_hard_block` | hard-severity secrets (access keys, private keys) → routes to `security_incident_review` + Slack |
+| `check_retrieval_quality` | RAGAS faithfulness/precision/recall below floor |
+| `check_answer_guardrails` | golden-set answers judged ungrounded |
+| `check_input_safety` (query-time) | prompt injection / off-topic / action-seeking questions |
+| `check_groundedness` (query-time) | answer claims not supported by retrieved context |
 
-(`airflow_settings.yaml` sets up the same two connections, plus
-`slack_default` below, for local Astro CLI development.)
+## Setup
 
-Swap `meta-llama/Llama-3.3-70B-Instruct:novita` for any other chat model
-Inference Providers serves (model ids take the form
-`org/model:provider`, e.g. `Qwen/Qwen2.5-72B-Instruct:novita`) by changing
-the connection's `model` (and `PM_RAG_GENERATION_MODEL` to match, for the
-RAGAS judge), and swap the embedding model via the
-`PM_RAG_EMBEDDING_MODEL` env var -- no code changes needed. Structured
-guardrail output (`GROUNDEDNESS_OUTPUT_TYPE`/`INPUT_SAFETY_OUTPUT_TYPE` in
-`src/guardrails.py`) uses `PromptedOutput` rather than native structured
-output, since not every Inference Providers backend supports
-function-calling or `response_format: json_schema` -- worth rechecking if
-you swap to a provider/model that does. See
-[huggingface.co/docs/inference-providers/pricing](https://huggingface.co/docs/inference-providers/pricing)
-for current rates; every account gets some free monthly credit, and HF
-passes through the underlying provider's price with no markup.
-
-### RAGAS judge caching
-
-`check_retrieval_quality` in `src/evaluate.py` wraps the RAGAS judge LLM in
-a `DiskCacheBackend` (`ragas.cache`), keyed by prompt, and writes to
-`PM_RAG_RAGAS_CACHE_DIR` (default `/tmp/postmortem-rag-ragas-cache`). A
-re-run of `postmortem_rag_pipeline` over unchanged staging content -- e.g.
-retrying after an unrelated task failure -- reuses cached judge responses
-instead of repaying the full RAGAS judging cost for every golden question.
-Delete the cache dir (or point `PM_RAG_RAGAS_CACHE_DIR` elsewhere) to force
-fresh judging, e.g. after changing the generation model or golden set.
-
-### Guardrails vs. quality gates
-
-RAGAS (`check_retrieval_quality`) scores answer/retrieval quality
-*continuously* against a floor -- a slightly-below-floor run and a
-wildly-below-floor run both just "fail the gate." Guardrails are hard
-pass/fail checks that don't average away, at two stages:
-
-- **Ingest-time** (`src/guardrails.py::scan_and_redact`, deterministic, no
-  LLM call): every source document is scanned for emails/tokens (soft --
-  redacted, ingestion continues) and cloud provider access keys / private
-  key blocks (hard -- also redacted, but `check_pii_hard_block` blocks
-  promotion to prod regardless of RAGAS scores until a human reviews and
-  re-ingests a cleaned copy). See
-  `data/postmortems/INC-2350-support-ticket-leak.md` for the fixture this
-  is built to catch.
-- **Query-time** (`dags/postmortem_query_pipeline.py`, LLM-judged via
-  `@task.llm` with structured Pydantic output): `check_input_safety`
-  refuses prompt-injection / off-topic / action-seeking questions before
-  any retrieval happens, and `check_groundedness` blocks a generated
-  answer whose claims aren't supported by the retrieved context --
-  including the case where the model would otherwise follow an
-  instruction embedded inside a postmortem document instead of just
-  reporting on it (also exercised by `INC-2350`'s "ignore all previous
-  instructions" sentence).
-
-### Human-in-the-loop review on gate failure
-
-When `evaluate_quality_gates` fails a check, `postmortem_rag_pipeline`
-doesn't just fail the run -- it branches to an `ApprovalOperator`
-(`apache-airflow-providers-standard`'s HITL operator) so a human explicitly
-signs off before anything is retried:
-
-- **`security_incident_review`** -- reached when `pii_hard_block` fails
-  (a hard-severity secret was found in staged content). It also fires a
-  `SlackWebhookNotifier` (`slack_default` connection) with an
-  `:rotating_light:` alert, since a credential leak needs faster attention
-  than a normal gate failure, and has a 4-hour `response_timeout`.
-- **`quality_gate_review`** -- reached for any other failing gate (RAGAS
-  floors, chunking/embedding drift, partial re-index, ungrounded answers).
-  No Slack ping; 1-day `response_timeout`.
-
-Either path, once a human responds in the Airflow UI, flows into
-`block_promotion`, which raises so the run fails loudly and prod keeps
-serving the last known-good index -- approval here means "I've seen this
-and will act on it," not "promote anyway." The `promote_to_prod` path
-never touches these operators; it only runs when every gate passes
-outright.
-
-Configure `slack_default` as a Slack Incoming Webhook connection (see
-`airflow_settings.yaml` for the local dev shape, or set
-`AIRFLOW_CONN_SLACK_DEFAULT` with `conn_type=slackwebhook` and the webhook
-URL as the password) before triggering the DAG for real -- without it, the
-`security_incident_review` branch will only fail to notify, not fail to
-require approval.
-
-### Asking a question
-
-`@task.llm` only works inside a DAG's task graph, so answering a question
-is now an Airflow DAG run rather than an in-process CLI call:
-
-```bash
-python -m src.query "What caused the checkout latency spike?"
-# equivalent to:
-airflow dags trigger postmortem_query_pipeline --conf '{"question": "..."}'
-```
-
-Check the run's task logs in the Grid UI: `deliver_answer` if both
-guardrails passed, `refuse` if the input-safety guardrail blocked the
-question, or `block_answer` if the groundedness guardrail blocked the
-generated answer.
-
-### Asking a question from a local UI
-
-`streamlit_app.py` is a small local UI for the same DAG -- no Airflow UI, no
-CLI, and (unlike a Slack integration) no public exposure needed, since it
-only ever talks to `localhost`. It triggers `postmortem_query_pipeline` over
-Airflow's REST API with a client-chosen `dag_run_id`, then polls
-`include/query_results.db` (written by `_record_result` in
-`dags/postmortem_query_pipeline.py`, keyed by that same run id) until the
-answer, refusal, or block message shows up.
-
-```bash
-pip install streamlit requests
-streamlit run streamlit_app.py
-```
-
-By default it talks to `http://localhost:8080` with the `admin`/`admin`
-credentials from `airflow.cfg`'s `simple_auth_manager_users` -- override with
-the `AIRFLOW_BASE_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD` env vars if
-your local Airflow API server is mapped to a different port or uses
-different credentials (check with `docker port <project>-api-server-1`).
-
-The Chroma collection names in `src/ingest.py` (`postmortem_index_staging`,
-`postmortem_index_prod`) match the Airflow `Asset` names in the DAG file
-one-to-one on purpose -- an Asset event and the physical index it
-describes should never drift into different naming schemes, which is
-exactly the kind of silent mismatch this whole pipeline exists to prevent.
-
-
-
-| Slide | Claim | Backed by |
-|---|---|---|
-| 4 | The four failure modes | `check_chunking_regression`, `check_embedding_model_drift`, `check_partial_reindex`, `check_retrieval_quality` in `src/evaluate.py` |
-| 5 | Staging → gates → promote/block/human-review architecture | `dags/postmortem_rag_pipeline.py` task graph |
-| 6 | RAGAS floors: faithfulness 0.85, context precision/recall 0.75 | `RAGAS_FLOORS` in `src/evaluate.py` |
-| 7 | Asset names `postmortem_index_staging` / `postmortem_index_prod` | `Asset(...)` calls in the DAG **and** `STAGING_COLLECTION` / `PROD_COLLECTION` in `src/ingest.py` (kept identical on purpose -- see above) |
-| 8 | `rerun_with_latest_version=False` | passed directly to the `DAG(...)` constructor in `dags/postmortem_rag_pipeline.py` |
-| 9 | Demo task sequence (`build_staging_index` → `publish_staging_asset` → `evaluate_quality_gates` → `promote_to_prod`/human review → `block_promotion`) | task names in `dags/postmortem_rag_pipeline.py`, unchanged |
-| 13 | Repo contents | `dags/`, `src/`, `tests/` |
-
-
-## The failure modes and guardrails, and where each is caught
-
-| Check | Where it's caught | How |
-|---|---|---|
-| Chunking regressions | `check_chunking_regression` | compares chunk count / avg chunk size to the last **passing** run; fails if drift exceeds threshold |
-| Embedding model drift | `check_embedding_model_drift` | compares the embedding model name recorded in this run's manifest to the last passing run's |
-| Partial re-index states | `check_partial_reindex` | confirms every source document present on disk made it into the staging manifest |
-| PII/secret hard block (guardrail) | `check_pii_hard_block` | fails if any source document contained a hard-severity secret (cloud access key, private key block), even after redaction; routes to `security_incident_review` + Slack alert |
-| Retrieval quality decay | `check_retrieval_quality` | runs the golden question set's common.ai-generated answers through RAGAS (`faithfulness`, `context_precision`, `context_recall`, judge responses disk-cached) against fixed floors |
-| Ungrounded answers (guardrail) | `check_answer_guardrails` | fails if any golden-set answer was judged ungrounded by the `@task.llm` groundedness check |
-
-All six run against the **staging** Chroma collection. Production is only
-overwritten by `promote_to_prod`, which is only reached if every check
-passes. A failed check routes to a human-approval task
-(`security_incident_review` for the PII hard block, `quality_gate_review`
-for everything else -- see above), then into `block_promotion`, which
-raises -- the DAG run fails loudly, and prod keeps serving the last
-known-good index.
-
-## Offline logic smoke test (no API keys / network needed)
-
-`tests/run_smoketest.py` runs the real ingestion, quality-gate, and
-guardrail logic end-to-end against hand-written fake `chromadb` /
-`openai` / `datasets` / `ragas` / `instructor` / `airflow.sdk` /
-`airflow.providers.standard.operators.hitl` / `airflow.providers.slack`
-modules (in `tests/fakes/`). It proves the Python logic itself --
-chunking, PII redaction, manifest diffing, all structural and guardrail
-gates (including their *failure* paths), the RAGAS-gate wiring, promotion,
-the query CLI's trigger command, and both DAG files' task wiring
-(including dynamic task mapping, `@task.llm`, and the HITL/Slack branches)
--- is free of bugs, without needing network access or real credentials. It
-does **not** validate real embedding/retrieval quality, real RAGAS scores,
-or real LLM guardrail judgments -- run the real pipeline for that.
-
-```bash
-python3 tests/run_smoketest.py
-```
-
-Exits 0 with a `PASS`/`FAIL` line per check; useful as a pre-flight before
-a live demo, or as a starting point for real unit tests once you're
-plugging in an actual corpus.
-
-Two more test files run against real (not faked) Airflow deps, inside a
-container:
-
-```bash
-pytest tests/dags/test_dag_example.py   # tags/retries/import-error sanity check on every DAG
-pytest tests/test_query_results.py      # unit test for the SQLite result writer streamlit_app.py polls
-```
-
-## Running locally
+Models are hosted via [Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers)
+— no GPU or local model server needed, just an [HF token](https://huggingface.co/settings/tokens).
 
 ```bash
 pip install -r requirements.txt
 
-# Generate a token at https://huggingface.co/settings/tokens
 export HF_TOKEN=hf_your_token_here
 export HF_BASE_URL=https://router.huggingface.co/v1
 export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
 export AIRFLOW_CONN_PYDANTICAI_GROUNDEDNESS='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
 
-# Optional, only needed for the security_incident_review Slack alert:
+# optional — enables the Slack alert on a PII/secret hard-block
 export AIRFLOW_CONN_SLACK_DEFAULT='{"conn_type": "slackwebhook", "password": "https://hooks.slack.com/services/your/webhook/path"}'
-
-# Point Airflow at this project's dags/ folder, then trigger
-# postmortem_rag_pipeline from the UI or:
-airflow dags trigger postmortem_rag_pipeline
-
-# Once promoted, ask it something:
-python -m src.query "What caused the checkout latency spike?"
 ```
 
-## Adapting this for a real postmortem corpus
+Swap models by changing the connection's `model` (and `PM_RAG_GENERATION_MODEL`
+to match, for the RAGAS judge) or the embedding model via `PM_RAG_EMBEDDING_MODEL`
+— no code changes needed. `airflow_settings.yaml` has the equivalent local
+Astro CLI connection setup.
 
-- Swap `data/postmortems/*.md` for an export of your actual incident
-  tracker (PagerDuty, Jira, Rootly, etc.) -- one document per incident is
-  the right granularity; don't concatenate a quarter's postmortems into
-  one file, or chunking will mix unrelated incidents into one chunk.
-- Regenerate `data/eval_dataset.jsonl` from your own corpus. RAGAS's
-  reference-free metrics (faithfulness, answer relevancy) don't need a
-  ground truth; `context_recall` does, so keep a small hand-written golden
-  set even as the corpus grows.
-- Replace `schedule=None` with an Asset-based schedule keyed off your
-  incident tracker's webhook, or a lightweight sensor, so a new postmortem
-  triggers a refresh automatically rather than waiting for a nightly cron.
-- The RAGAS floors in `src/evaluate.py` (0.85 faithfulness, 0.75 precision
-  and recall) are a reasonable starting point, not a universal constant --
-  run the gate against your own historical "known good" index first to see
-  where your baseline actually sits, then set floors slightly below that.
-- `SENSITIVE_PATTERNS` in `src/guardrails.py` is a starting set (emails,
-  bearer tokens, cloud access keys, private key blocks) -- extend it with
-  your own org's secret formats, and tune the two guardrail system prompts
-  (`INPUT_GUARDRAIL_SYSTEM_PROMPT`, `GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT`)
-  against real questions/answers from your corpus before trusting them to
-  block automatically rather than just flag for review.
-- `security_incident_review`'s Slack alert and 4-hour response timeout are
-  tuned for a demo; in production, route it to whatever on-call/paging
-  system actually handles credential leaks, and set the timeout to match
-  your incident-response SLA rather than leaving a leaked secret unblocked
-  in staging for up to 4 hours by default.
+## Running
+
+```bash
+airflow dags trigger postmortem_rag_pipeline
+
+python -m src.query "What caused the checkout latency spike?"
+# or:
+streamlit run streamlit_app.py
+```
+
+## Testing
+
+```bash
+python3 tests/run_smoketest.py          # offline, no network/creds — fakes chromadb/openai/ragas/airflow
+pytest tests/dags/test_dag_example.py   # DAG integrity: tags, retries, import errors
+pytest tests/test_query_results.py      # SQLite result-writer unit test
+```
+
+## Adapting for a real corpus
+
+- Swap `data/postmortems/*.md` for an export of your incident tracker —
+  one document per incident, so chunking doesn't mix unrelated incidents.
+- Regenerate `data/eval_dataset.jsonl` from your own corpus; keep a small
+  hand-written golden set since RAGAS's `context_recall` needs ground truth.
+- Replace `schedule=None` with an Asset-based schedule tied to your
+  tracker's webhook.
+- Re-baseline the RAGAS floors in `src/evaluate.py` against your own
+  "known good" index rather than trusting the defaults.
+- Extend `SENSITIVE_PATTERNS` in `src/guardrails.py` with your org's secret
+  formats, and tune both guardrail prompts against real Q&A before trusting
+  them to block automatically.
+- Point `security_incident_review`'s Slack alert and response timeout at
+  your real on-call/incident-response process.
