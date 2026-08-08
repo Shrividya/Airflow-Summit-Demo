@@ -1,17 +1,14 @@
-"""Hard pass/fail guardrails for the postmortem RAG pipeline (as opposed to
-the score-against-a-floor quality gates in src/evaluate.py). scan_and_redact
-runs at ingest time; InputSafetyVerdict/GroundednessVerdict back the
-query-time @task.llm checks in the DAGs."""
+"""Hard pass/fail guardrails, as opposed to the scored quality gates in
+src/evaluate.py. scan_and_redact runs at ingest time; InputSafetyVerdict and
+GroundednessVerdict back the query-time @task.llm checks in the DAGs."""
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
-from pydantic_ai import PromptedOutput
 
-# "soft" findings are redacted and ingestion continues; "hard" findings are
-# also redacted but flag the run so check_pii_hard_block blocks promotion.
+# "hard" findings still get redacted but also flag the run for check_pii_hard_block.
 SENSITIVE_PATTERNS: dict[str, dict] = {
     "email": {
         "pattern": re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"),
@@ -98,8 +95,7 @@ unsupported claim you list, you must be able to point to why it is absent, not \
 merely that it seems tangential to the question."""
 
 
-# agent_params for every @task.llm call: bump pydantic-ai's structured-output
-# retry budget past its default of 1, and force temperature 0.
+# retries past pydantic-ai's default of 1, temperature 0 for every @task.llm call
 CACHED_INSTRUCTIONS_SETTINGS = {"retries": 2, "model_settings": {"temperature": 0}}
 
 
@@ -114,9 +110,8 @@ class GroundednessVerdict(BaseModel):
     reason: str = Field(description="One sentence explaining the verdict.")
 
 
-# PromptedOutput (JSON via prompt instructions, parsed from free text) never
-# sends response_format or tools, so it works regardless of what a given
-# novita-served model supports at the API level -- unlike src/evaluate.py's
-# judge LLM, which broke when it relied on response_format: json_object.
-INPUT_SAFETY_OUTPUT_TYPE = PromptedOutput(InputSafetyVerdict)
-GROUNDEDNESS_OUTPUT_TYPE = PromptedOutput(GroundednessVerdict)
+# Plain BaseModel output types -> pydantic-ai uses tool-call structured output
+# instead of response_format: json_object. novita supports tool-calling but
+# rejects response_format outright (same constraint as src/evaluate.py).
+INPUT_SAFETY_OUTPUT_TYPE = InputSafetyVerdict
+GROUNDEDNESS_OUTPUT_TYPE = GroundednessVerdict

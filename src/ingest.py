@@ -1,9 +1,6 @@
-"""Ingestion logic for the postmortem RAG pipeline: plain functions called
-from dags/postmortem_rag_pipeline.py's @task wrappers and from the query
-path. Chroma is local/on-disk; embeddings go through a Hugging Face-hosted
-model via huggingface_hub's InferenceClient. Source documents are scanned
-for PII/secrets (src/guardrails.py) and redacted before chunking.
-"""
+"""Ingestion logic: chunking, embedding, and Chroma staging/prod, called from
+dags/postmortem_rag_pipeline.py's @task wrappers and from the query path.
+Source documents are scanned for PII/secrets (src/guardrails.py) before chunking."""
 from __future__ import annotations
 
 import glob
@@ -46,9 +43,8 @@ class IngestManifest:
 
 
 def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Simple paragraph-aware character splitter, dependency-light so this
-    runs without langchain. Swap for RecursiveCharacterTextSplitter or a
-    semantic chunker in production."""
+    """Paragraph-aware character splitter -- no langchain dependency.
+    Swap for a real text splitter in production."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks: list[str] = []
     buf = ""
@@ -87,9 +83,7 @@ def load_source_documents(source_dir: str) -> dict[str, str]:
 
 def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
     """`input_type` is unused by all-MiniLM-L6-v2, kept for parity with
-    asymmetric embedding APIs. Goes through
-    huggingface_hub.InferenceClient.feature_extraction since HF's
-    OpenAI-compatible router doesn't reliably support /v1/embeddings."""
+    asymmetric embedding APIs."""
     if not texts:
         raise ValueError("embed_texts called with an empty list of texts")
     client = InferenceClient(model=EMBEDDING_MODEL, token=HF_TOKEN)
@@ -102,17 +96,11 @@ def get_chroma_client(path: str = CHROMA_PATH) -> "chromadb.ClientAPI":
 
 
 def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> IngestManifest:
-    """Chunk + embed all postmortems into the STAGING collection. Nothing
-    here is queryable in prod until the DAG's quality gate promotes
-    staging -> prod."""
+    """Chunk + embed all postmortems into the STAGING collection."""
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     docs = load_source_documents(source_dir)
     if not docs:
-        raise ValueError(
-            f"No source documents (*.md) found in {source_dir!r}. "
-            "Check PM_RAG_SOURCE_DIR / SOURCE_DIR -- refusing to build an "
-            "index from zero documents."
-        )
+        raise ValueError(f"No source documents (*.md) found in {source_dir!r}. Check PM_RAG_SOURCE_DIR / SOURCE_DIR.")
 
     client = get_chroma_client()
     client.delete_collection(STAGING_COLLECTION) if STAGING_COLLECTION in [c.name for c in client.list_collections()] else None
@@ -129,8 +117,7 @@ def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> Ingest
     any_hard_block = False
 
     for doc_id, raw_text in docs.items():
-        # hash the raw text (pre-redaction) so the partial-reindex gate
-        # detects real content changes, not redaction noise
+        # hash pre-redaction so the partial-reindex gate ignores redaction noise
         doc_hashes[doc_id] = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()[:16]
         text, findings = scan_and_redact(raw_text)
         if findings:
@@ -172,9 +159,7 @@ def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> Ingest
 
 
 def promote_staging_to_prod() -> None:
-    """Copy the staging collection into the prod collection. Only called
-    by the DAG after every quality gate has passed; the only place prod is
-    ever written."""
+    """Copy the staging collection into the prod collection. Only place prod is written."""
     client = get_chroma_client()
     staging = client.get_collection(STAGING_COLLECTION)
     existing = [c.name for c in client.list_collections()]

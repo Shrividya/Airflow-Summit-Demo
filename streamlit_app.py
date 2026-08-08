@@ -1,15 +1,11 @@
 """Local UI: ask the postmortem RAG assistant a question without touching the
 Airflow UI or the CLI (`src/query.py`).
 
-Runs as a plain local process (`streamlit run streamlit_app.py`), outside the
-Astro/Airflow containers. It triggers postmortem_query_pipeline over Airflow's
-REST API, shows the pipeline's real task states as it runs (input-safety ->
-retrieval -> generation -> groundedness), then reads the outcome from
-include/query_results.db -- written by `_record_result` in
-dags/postmortem_query_pipeline.py -- keyed by the dag_run_id this script
-picks. That file is readable directly because Astro dev bind-mounts the
-project directory into the containers, so the same file a task writes from
-inside a container is right here on disk.
+Runs outside the Astro/Airflow containers. Triggers postmortem_query_pipeline
+over Airflow's REST API, shows task states as it runs, then reads the outcome
+from include/query_results.db -- written by `_record_result` in
+dags/postmortem_query_pipeline.py, readable here because Astro dev bind-mounts
+the project directory into the containers.
 
     pip install streamlit requests
     streamlit run streamlit_app.py
@@ -33,9 +29,8 @@ RESULTS_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "incl
 POLL_INTERVAL_SECONDS = 1
 POLL_TIMEOUT_SECONDS = 90
 
-# Ordered so the status view fills in top-to-bottom as the DAG actually runs;
-# only the tasks on the "safe, grounded" path get a friendly label -- refuse/
-# block_answer show up implicitly once query_results.db has the final verdict.
+# only the "safe, grounded" path tasks get a label; refuse/block_answer show
+# up once query_results.db has the final verdict
 PIPELINE_STAGES = [
     ("check_input_safety", "Checking the question isn't off-topic or a prompt injection"),
     ("retrieve_context", "Retrieving relevant postmortem excerpts"),

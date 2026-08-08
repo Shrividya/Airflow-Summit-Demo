@@ -15,7 +15,7 @@ airflow:
       conn_password: hf_replace_with_your_token
       conn_port:
       conn_extra:
-        model: openai:meta-llama/Llama-3.3-70B-Instruct:novita
+        model: openai-chat:meta-llama/Llama-3.3-70B-Instruct:novita
     - conn_id: pydanticai_groundedness
       conn_type: pydanticai
       conn_host: https://router.huggingface.co/v1
@@ -24,7 +24,7 @@ airflow:
       conn_password: hf_replace_with_your_token
       conn_port:
       conn_extra:
-        model: openai:meta-llama/Llama-3.3-70B-Instruct:novita
+        model: openai-chat:meta-llama/Llama-3.3-70B-Instruct:novita
     - conn_id: slack_default
       conn_type: slackwebhook
       conn_host:

@@ -1,9 +1,5 @@
 """Ingest incident postmortems into a quality-gated, guardrailed RAG index.
-Uses TaskFlow, Assets for the staging/prod indices, and common-ai's
-@task.llm (mapped one task per golden question) for generation and the
-groundedness guardrail. Gate checks against STAGING before promotion live
-in src/evaluate.py.
-"""
+Gate checks against STAGING before promotion live in src/evaluate.py."""
 from __future__ import annotations
 
 import json
@@ -26,8 +22,7 @@ from src.guardrails import (  # noqa: E402
 SOURCE_DIR = os.environ.get("PM_RAG_SOURCE_DIR", "/usr/local/airflow/data/postmortems")
 EVAL_DATASET_PATH = os.environ.get("PM_RAG_EVAL_DATASET", "/usr/local/airflow/data/eval_dataset.jsonl")
 LLM_CONN_ID = os.environ.get("PM_RAG_LLM_CONN_ID", "pydanticai_default")
-# Groundedness judging needs stronger claim-attribution than generation does,
-# so it gets its own (larger) model rather than sharing LLM_CONN_ID.
+# larger model than LLM_CONN_ID -- groundedness judging needs stronger claim attribution
 GROUNDEDNESS_LLM_CONN_ID = os.environ.get("PM_RAG_GROUNDEDNESS_LLM_CONN_ID", "pydanticai_groundedness")
 
 GENERATION_SYSTEM_PROMPT = (

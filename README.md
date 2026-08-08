@@ -47,8 +47,8 @@ pip install -r requirements.txt
 
 export HF_TOKEN=hf_your_token_here
 export HF_BASE_URL=https://router.huggingface.co/v1
-export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
-export AIRFLOW_CONN_PYDANTICAI_GROUNDEDNESS='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
+export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai-chat:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
+export AIRFLOW_CONN_PYDANTICAI_GROUNDEDNESS='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai-chat:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
 
 # optional — enables the Slack alert on a PII/secret hard-block
 export AIRFLOW_CONN_SLACK_DEFAULT='{"conn_type": "slackwebhook", "password": "https://hooks.slack.com/services/your/webhook/path"}'

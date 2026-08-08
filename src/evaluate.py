@@ -1,10 +1,8 @@
-"""Quality gates for the postmortem RAG pipeline, run against the STAGING
-index before promotion: structural checks (chunking/embedding drift,
-partial re-index) diffed against the previous IngestManifest, RAGAS
-evaluation scored against a floor, and guardrails that fail outright rather
-than averaging away. Generation/groundedness verdicts come from the DAG's
-mapped @task.llm tasks; this module just scores/branches.
-"""
+"""Quality gates run against the STAGING index before promotion: structural
+checks diffed against the previous IngestManifest, RAGAS scored against a
+floor, and guardrails that fail outright rather than averaging away.
+Generation/groundedness verdicts come from the DAG's mapped @task.llm tasks;
+this module just scores/branches."""
 from __future__ import annotations
 
 import json
@@ -83,8 +81,7 @@ def check_embedding_model_drift(manifest: IngestManifest) -> QualityGateResult:
     detail = (
         f"embedding_model unchanged: {manifest.embedding_model}"
         if passed else
-        f"embedding_model changed from {prev['embedding_model']} to {manifest.embedding_model} "
-        f"-- requires an explicit full re-index and reviewed config change, not an inline promotion"
+        f"embedding_model changed from {prev['embedding_model']} to {manifest.embedding_model} -- requires a full re-index"
     )
     return QualityGateResult("embedding_model_drift", passed, detail)
 
@@ -135,9 +132,7 @@ def check_answer_guardrails(verdicts: list[dict]) -> QualityGateResult:
 
 
 def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
-    """`rows` are dicts with question/contexts/ground_truth/answer, one per
-    golden question -- see generate_eval_answer in
-    dags/postmortem_rag_pipeline.py."""
+    """`rows` are dicts with question/contexts/ground_truth/answer, one per golden question."""
     import instructor
     from datasets import Dataset
     from ragas import evaluate
@@ -158,17 +153,11 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
         "ground_truth": ground_truths,
     })
 
-    # novita (the HF router provider serving Llama-3.3-70B-Instruct here)
-    # supports neither response_format: json_object nor json_schema
-    # (supports_structured_output=False on the router's model listing) --
-    # same constraint as INPUT_SAFETY_OUTPUT_TYPE/GROUNDEDNESS_OUTPUT_TYPE
-    # in src/guardrails.py. Mode.TOOLS uses function-calling instead, which
-    # novita does support (supports_tools=True).
+    # novita rejects response_format: json_object/json_schema (same constraint
+    # as src/guardrails.py) but supports tool-calling, so use Mode.TOOLS
     patched_client = instructor.from_openai(
         OpenAI(base_url=HF_BASE_URL, api_key=HF_TOKEN), mode=instructor.Mode.TOOLS
     )
-    # cache judge responses on disk so reruns over unchanged staging content
-    # don't repay the full RAGAS judging cost
     ragas_cache = DiskCacheBackend(cache_dir=RAGAS_CACHE_DIR)
     ragas_llm = InstructorLLM(client=patched_client, model=GENERATION_MODEL, provider="openai", cache=ragas_cache)
     # this model rejects ragas's default temperature=0.01/top_p
@@ -207,9 +196,7 @@ def run_all_gates(
     generated_answers: list[dict],
     groundedness_verdicts: list[dict],
 ) -> list[QualityGateResult]:
-    """`generated_answers` and `groundedness_verdicts` come from the DAG's
-    mapped tasks (generate_eval_answer / check_groundedness), one entry
-    per golden question."""
+    """`generated_answers` and `groundedness_verdicts` come from the DAG's mapped tasks."""
     return [
         check_chunking_regression(manifest),
         check_embedding_model_drift(manifest),

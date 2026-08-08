@@ -2,9 +2,7 @@
 
     python -m src.query "What caused the checkout latency spike?"
 
-Answering a question is a DAG run against the PROD collection, not a plain
-Python call -- watch the answer in the Airflow UI (Grid -> this run ->
-deliver_answer task's logs) or:
+Watch the answer in the Airflow UI (Grid -> this run -> deliver_answer) or:
 
     airflow tasks logs postmortem_query_pipeline <run_id> deliver_answer
 """
