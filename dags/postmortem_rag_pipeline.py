@@ -1,11 +1,8 @@
 """Ingest incident postmortems into a quality-gated, guardrailed RAG index.
-Uses TaskFlow, Assets for the staging/prod indices, `rerun_with_latest_version=False`
-so reruns replay the original chunking/embedding code, and common-ai's
-`@task.llm` (mapped one task per golden question) for generation and the
+Uses TaskFlow, Assets for the staging/prod indices, and common-ai's
+@task.llm (mapped one task per golden question) for generation and the
 groundedness guardrail. Gate checks against STAGING before promotion live
-in src/evaluate.py: chunking regression, embedding model drift, partial
-re-index, PII/secret hard block, RAGAS retrieval quality, and ungrounded
-answers.
+in src/evaluate.py.
 """
 from __future__ import annotations
 
@@ -23,12 +20,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.guardrails import (  # noqa: E402
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
-    GroundednessVerdict,
+    GROUNDEDNESS_OUTPUT_TYPE,
 )
 
 SOURCE_DIR = os.environ.get("PM_RAG_SOURCE_DIR", "/usr/local/airflow/data/postmortems")
 EVAL_DATASET_PATH = os.environ.get("PM_RAG_EVAL_DATASET", "/usr/local/airflow/data/eval_dataset.jsonl")
 LLM_CONN_ID = os.environ.get("PM_RAG_LLM_CONN_ID", "pydanticai_default")
+# Groundedness judging needs stronger claim-attribution than generation does,
+# so it gets its own (larger) model rather than sharing LLM_CONN_ID.
+GROUNDEDNESS_LLM_CONN_ID = os.environ.get("PM_RAG_GROUNDEDNESS_LLM_CONN_ID", "pydanticai_groundedness")
 
 GENERATION_SYSTEM_PROMPT = (
     "Answer the question using ONLY the postmortem excerpts provided. "
@@ -80,7 +80,15 @@ with DAG(
             })
         return items
 
-    @task.llm(llm_conn_id=LLM_CONN_ID, system_prompt=GENERATION_SYSTEM_PROMPT, agent_params=CACHED_INSTRUCTIONS_SETTINGS)
+    @task.llm(
+        llm_conn_id=LLM_CONN_ID,
+        system_prompt=GENERATION_SYSTEM_PROMPT,
+        agent_params=CACHED_INSTRUCTIONS_SETTINGS,
+        retries=4,
+        retry_delay=timedelta(seconds=15),
+        retry_exponential_backoff=True,
+        max_retry_delay=timedelta(minutes=2),
+    )
     def generate_eval_answer(item: dict) -> str:
         context_block = "\n\n---\n\n".join(item["contexts"])
         return f"Excerpts:\n{context_block}\n\nQuestion: {item['question']}\nAnswer:"
@@ -90,10 +98,17 @@ with DAG(
         return [{**item, "answer": answer} for item, answer in zip(items, answers)]
 
     @task.llm(
-        llm_conn_id=LLM_CONN_ID,
+        llm_conn_id=GROUNDEDNESS_LLM_CONN_ID,
         system_prompt=GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
-        output_type=GroundednessVerdict,
+        output_type=GROUNDEDNESS_OUTPUT_TYPE,
+        serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
+        # novita occasionally masks a rate limit as an empty response under
+        # the concurrency from .expand(); retry with backoff to clear it.
+        retries=4,
+        retry_delay=timedelta(seconds=15),
+        retry_exponential_backoff=True,
+        max_retry_delay=timedelta(minutes=2),
     )
     def check_groundedness(item: dict) -> str:
         context_block = "\n\n---\n\n".join(item["contexts"])

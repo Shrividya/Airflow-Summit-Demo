@@ -1,10 +1,9 @@
 """Quality gates for the postmortem RAG pipeline, run against the STAGING
 index before promotion: structural checks (chunking/embedding drift,
 partial re-index) diffed against the previous IngestManifest, RAGAS
-evaluation scored against a floor, and guardrails (check_pii_hard_block,
-check_answer_guardrails) that fail outright rather than averaging away.
-Generation and groundedness verdicts come from the DAG's mapped `@task.llm`
-tasks (dags/postmortem_rag_pipeline.py); this module just scores/branches.
+evaluation scored against a floor, and guardrails that fail outright rather
+than averaging away. Generation/groundedness verdicts come from the DAG's
+mapped @task.llm tasks; this module just scores/branches.
 """
 from __future__ import annotations
 
@@ -16,8 +15,10 @@ from typing import Optional
 
 from src.ingest import IngestManifest, CHROMA_PATH
 
-GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "llama3.1")
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "meta-llama/Llama-3.3-70B-Instruct:novita")
+HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
+HF_TOKEN = os.environ.get("HF_TOKEN")
+RAGAS_CACHE_DIR = os.environ.get("PM_RAG_RAGAS_CACHE_DIR", "/tmp/postmortem-rag-ragas-cache")
 
 # allow chunk count/size to move by this much run-over-run before blocking
 MAX_CHUNK_COUNT_DRIFT_PCT = 0.25
@@ -137,10 +138,12 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
     """`rows` are dicts with question/contexts/ground_truth/answer, one per
     golden question -- see generate_eval_answer in
     dags/postmortem_rag_pipeline.py."""
+    import instructor
     from datasets import Dataset
     from ragas import evaluate
+    from ragas.cache import DiskCacheBackend
     from ragas.metrics import faithfulness, context_precision, context_recall
-    from ragas.llms import llm_factory
+    from ragas.llms.base import InstructorLLM
     from openai import OpenAI
 
     questions = [r["question"] for r in rows]
@@ -155,11 +158,20 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
         "ground_truth": ground_truths,
     })
 
-    # wire ragas's judge to the same local Ollama model used for generation
-    ragas_llm = llm_factory(
-        GENERATION_MODEL, provider="openai", client=OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+    # novita (the HF router provider serving Llama-3.3-70B-Instruct here)
+    # supports neither response_format: json_object nor json_schema
+    # (supports_structured_output=False on the router's model listing) --
+    # same constraint as INPUT_SAFETY_OUTPUT_TYPE/GROUNDEDNESS_OUTPUT_TYPE
+    # in src/guardrails.py. Mode.TOOLS uses function-calling instead, which
+    # novita does support (supports_tools=True).
+    patched_client = instructor.from_openai(
+        OpenAI(base_url=HF_BASE_URL, api_key=HF_TOKEN), mode=instructor.Mode.TOOLS
     )
-    # ragas defaults to sending temperature=0.01 and top_p, both of which this model rejects
+    # cache judge responses on disk so reruns over unchanged staging content
+    # don't repay the full RAGAS judging cost
+    ragas_cache = DiskCacheBackend(cache_dir=RAGAS_CACHE_DIR)
+    ragas_llm = InstructorLLM(client=patched_client, model=GENERATION_MODEL, provider="openai", cache=ragas_cache)
+    # this model rejects ragas's default temperature=0.01/top_p
     if hasattr(ragas_llm, "model_args"):
         ragas_llm.model_args.pop("temperature", None)
         ragas_llm.model_args.pop("top_p", None)
@@ -181,7 +193,11 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
         if scores.get(metric, 0) < floor
     ]
     passed = len(failures) == 0
-    detail = "All RAGAS metrics at or above floor." if passed else "Below floor: " + "; ".join(failures)
+    scores_summary = "; ".join(f"{metric}={scores.get(metric, 0):.2f} (floor {floor})" for metric, floor in RAGAS_FLOORS.items())
+    detail = (
+        f"All RAGAS metrics at or above floor -- {scores_summary}." if passed
+        else "Below floor: " + "; ".join(failures)
+    )
     return QualityGateResult("retrieval_quality_decay", passed, detail, scores)
 
 

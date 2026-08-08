@@ -17,6 +17,7 @@ src/ingest.py                     chunking, PII/secret redaction, embedding, Chr
 src/evaluate.py                   the structural + RAGAS quality gates, plus the guardrail gates
 src/guardrails.py                 ingest-time PII/secret scanner + query-time LLM guardrail models/prompts
 src/query.py                      thin CLI wrapper that triggers postmortem_query_pipeline
+streamlit_app.py                  local UI: triggers postmortem_query_pipeline over the REST API, polls for the answer
 data/postmortems/*.md             5 synthetic sample postmortems (source corpus)
 data/eval_dataset.jsonl           golden question set used by the RAGAS gate
 tests/run_smoketest.py            offline logic smoke test (see below)
@@ -35,29 +36,43 @@ generation, input-safety judging, groundedness judging -- now shows up as
 its own task in the Airflow UI with its own logs and retries, including the
 mapped one-per-golden-question tasks in the ingestion DAG.
 
-This project runs entirely on **open-source models served locally by
-[Ollama](https://ollama.com)** -- no API keys, no cloud calls. Generation,
-both guardrail judges, and the RAGAS eval judge all use the same local
-model (default `llama3.1`) through pydantic-ai's built-in Ollama provider;
-embeddings use a separate local embedding model (default
-`nomic-embed-text`) via Ollama's OpenAI-compatible endpoint. Install Ollama
-and pull both models once:
+This project runs on **open-source models hosted by [Hugging Face's
+Inference Providers](https://huggingface.co/docs/inference-providers)** --
+you need an [HF API token](https://huggingface.co/settings/tokens), but no
+GPU of your own and no local model server. Generation and the input-safety
+guardrail run on `pydanticai_default` (default
+`meta-llama/Llama-3.3-70B-Instruct:novita`); the groundedness guardrail
+runs on its own connection, `pydanticai_groundedness` (same default model,
+but kept separate since claim-attribution judging benefits from a
+strong/large model independently of whatever generation model you pick).
+The RAGAS eval judge (`PM_RAG_GENERATION_MODEL`) uses the same default
+model directly via the `openai` client. Embeddings use a separate hosted
+embedding model (default `sentence-transformers/all-MiniLM-L6-v2`) via
+`huggingface_hub`'s `InferenceClient`.
+
+Generate a token at https://huggingface.co/settings/tokens, then:
 
 ```bash
-ollama pull llama3.1
-ollama pull nomic-embed-text
+export HF_TOKEN=hf_your_token_here
+export HF_BASE_URL=https://router.huggingface.co/v1
+export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
+export AIRFLOW_CONN_PYDANTICAI_GROUNDEDNESS='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
 ```
 
-Configure the model via a `pydanticai` connection:
-
-```bash
-export OLLAMA_BASE_URL=http://localhost:11434/v1
-export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$OLLAMA_BASE_URL"'", "extra": {"model": "ollama:llama3.1"}}'
-```
-
-Swap `llama3.1` / `nomic-embed-text` for any other model you've pulled via
-`ollama pull` (e.g. `qwen2.5`, `mistral`) by changing the connection's
-`model` and the `PM_RAG_EMBEDDING_MODEL` env var -- no code changes needed.
+Swap `meta-llama/Llama-3.3-70B-Instruct:novita` for any other chat model
+Inference Providers serves (model ids take the form
+`org/model:provider`, e.g. `Qwen/Qwen2.5-72B-Instruct:novita`) by changing
+the connection's `model` (and `PM_RAG_GENERATION_MODEL` to match, for the
+RAGAS judge), and swap the embedding model via the
+`PM_RAG_EMBEDDING_MODEL` env var -- no code changes needed. Structured
+guardrail output (`GROUNDEDNESS_OUTPUT_TYPE`/`INPUT_SAFETY_OUTPUT_TYPE` in
+`src/guardrails.py`) uses `PromptedOutput` rather than native structured
+output, since not every Inference Providers backend supports
+function-calling or `response_format: json_schema` -- worth rechecking if
+you swap to a provider/model that does. See
+[huggingface.co/docs/inference-providers/pricing](https://huggingface.co/docs/inference-providers/pricing)
+for current rates; every account gets some free monthly credit, and HF
+passes through the underlying provider's price with no markup.
 
 ### Guardrails vs. quality gates
 
@@ -99,6 +114,27 @@ Check the run's task logs in the Grid UI: `deliver_answer` if both
 guardrails passed, `refuse` if the input-safety guardrail blocked the
 question, or `block_answer` if the groundedness guardrail blocked the
 generated answer.
+
+### Asking a question from a local UI
+
+`streamlit_app.py` is a small local UI for the same DAG -- no Airflow UI, no
+CLI, and (unlike a Slack integration) no public exposure needed, since it
+only ever talks to `localhost`. It triggers `postmortem_query_pipeline` over
+Airflow's REST API with a client-chosen `dag_run_id`, then polls
+`include/query_results.db` (written by `_record_result` in
+`dags/postmortem_query_pipeline.py`, keyed by that same run id) until the
+answer, refusal, or block message shows up.
+
+```bash
+pip install streamlit requests
+streamlit run streamlit_app.py
+```
+
+By default it talks to `http://localhost:8080` with the `admin`/`admin`
+credentials from `airflow.cfg`'s `simple_auth_manager_users` -- override with
+the `AIRFLOW_BASE_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD` env vars if
+your local Airflow API server is mapped to a different port or uses
+different credentials (check with `docker port <project>-api-server-1`).
 
 The Chroma collection names in `src/ingest.py` (`postmortem_index_staging`,
 `postmortem_index_prod`) match the Airflow `Asset` names in the DAG file
@@ -162,12 +198,11 @@ plugging in an actual corpus.
 ```bash
 pip install -r requirements.txt
 
-# Install Ollama (https://ollama.com) and pull the models this project uses:
-ollama pull llama3.1          # generation + guardrail judges + RAGAS judge
-ollama pull nomic-embed-text  # embeddings
-
-export OLLAMA_BASE_URL=http://localhost:11434/v1
-export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$OLLAMA_BASE_URL"'", "extra": {"model": "ollama:llama3.1"}}'
+# Generate a token at https://huggingface.co/settings/tokens
+export HF_TOKEN=hf_your_token_here
+export HF_BASE_URL=https://router.huggingface.co/v1
+export AIRFLOW_CONN_PYDANTICAI_DEFAULT='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
+export AIRFLOW_CONN_PYDANTICAI_GROUNDEDNESS='{"conn_type": "pydanticai", "host": "'"$HF_BASE_URL"'", "password": "'"$HF_TOKEN"'", "extra": {"model": "openai:meta-llama/Llama-3.3-70B-Instruct:novita"}}'
 
 # Point Airflow at this project's dags/ folder, then trigger
 # postmortem_rag_pipeline from the UI or:

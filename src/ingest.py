@@ -1,15 +1,8 @@
-"""Ingestion logic for the postmortem RAG pipeline. Plain functions, called
-from dags/postmortem_rag_pipeline.py's @task-decorated wrappers and from
-the query path, so it's testable and reusable outside Airflow.
-
-Chroma is local/on-disk (swap `get_chroma_client` for a hosted client in
-production). Embeddings use a local model served by Ollama (default
-`nomic-embed-text`) via its OpenAI-compatible endpoint; the model name is
-recorded on every chunk/collection for the embedding-model-drift gate.
-
-Source documents are scanned for PII/secrets (src/guardrails.py) and
-redacted before chunking, so raw sensitive strings never reach the
-embedding API or the vector index.
+"""Ingestion logic for the postmortem RAG pipeline: plain functions called
+from dags/postmortem_rag_pipeline.py's @task wrappers and from the query
+path. Chroma is local/on-disk; embeddings go through a Hugging Face-hosted
+model via huggingface_hub's InferenceClient. Source documents are scanned
+for PII/secrets (src/guardrails.py) and redacted before chunking.
 """
 from __future__ import annotations
 
@@ -21,11 +14,12 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-
+from src.guardrails import scan_and_redact, has_hard_finding
+from huggingface_hub import InferenceClient
 import chromadb
 
-EMBEDDING_MODEL = os.environ.get("PM_RAG_EMBEDDING_MODEL", "nomic-embed-text")
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+EMBEDDING_MODEL = os.environ.get("PM_RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+HF_TOKEN = os.environ.get("HF_TOKEN")
 CHUNK_SIZE = int(os.environ.get("PM_RAG_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.environ.get("PM_RAG_CHUNK_OVERLAP", "120"))
 CHROMA_PATH = os.environ.get("PM_RAG_CHROMA_PATH", "/tmp/postmortem-rag-chroma")
@@ -92,16 +86,15 @@ def load_source_documents(source_dir: str) -> dict[str, str]:
 
 
 def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
-    """`input_type` ("document"/"query") is unused by nomic-embed-text but
-    kept in the signature for parity with asymmetric embedding APIs."""
+    """`input_type` is unused by all-MiniLM-L6-v2, kept for parity with
+    asymmetric embedding APIs. Goes through
+    huggingface_hub.InferenceClient.feature_extraction since HF's
+    OpenAI-compatible router doesn't reliably support /v1/embeddings."""
     if not texts:
         raise ValueError("embed_texts called with an empty list of texts")
-
-    import openai
-
-    client = openai.OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
-    resp = client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
-    return [d.embedding for d in resp.data]
+    client = InferenceClient(model=EMBEDDING_MODEL, token=HF_TOKEN)
+    embeddings = client.feature_extraction(texts)
+    return [list(map(float, row)) for row in embeddings]
 
 
 def get_chroma_client(path: str = CHROMA_PATH) -> "chromadb.ClientAPI":
@@ -127,8 +120,6 @@ def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> Ingest
         STAGING_COLLECTION,
         metadata={"embedding_model": EMBEDDING_MODEL, "run_id": run_id},
     )
-
-    from src.guardrails import scan_and_redact, has_hard_finding
 
     all_chunks: list[str] = []
     all_ids: list[str] = []

@@ -1,26 +1,30 @@
 """Answer a user's question against the PRODUCTION postmortem index, with
-query-time guardrails on both ends of the LLM call: check_input_safety
-blocks prompt-injection/off-topic questions before retrieval, and
+query-time guardrails on both ends: check_input_safety blocks
+prompt-injection/off-topic questions before retrieval, and
 check_groundedness blocks an answer whose claims aren't supported by the
-retrieved context (see data/postmortems/INC-2350-support-ticket-leak.md
-for a prompt-injection example this catches). `src/query.py` triggers this
-DAG per-question:
+retrieved context. src/query.py triggers this DAG per-question:
     airflow dags trigger postmortem_query_pipeline --conf '{"question": "..."}'
+streamlit_app.py does the same over the REST API and polls include/query_results.db
+(written by _record_result below) for the answer, keyed by dag_run_id.
 """
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
-from airflow.sdk import DAG, Param, task
+from airflow.sdk import DAG, Param, get_current_context, task
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.guardrails import (  # noqa: E402
+from src.guardrails import (
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
+    GROUNDEDNESS_OUTPUT_TYPE,
     INPUT_GUARDRAIL_SYSTEM_PROMPT,
+    INPUT_SAFETY_OUTPUT_TYPE,
     GroundednessVerdict,
     InputSafetyVerdict,
 )
@@ -31,6 +35,33 @@ GENERATION_SYSTEM_PROMPT = (
     "Answer the question using ONLY the postmortem excerpts below. "
     "If the excerpts don't contain the answer, say so."
 )
+
+
+def _record_result(status: str, text: str, sources: list[dict] | None = None) -> None:
+    """Write this run's outcome to include/query_results.db, keyed by
+    dag_run_id, so streamlit_app.py (running outside the containers, on the
+    project directory Astro bind-mounts in) can poll for it. `sources` is
+    stored as JSON so the UI can render each hit instead of parsing text.
+    """
+    run_id = get_current_context()["dag_run"].run_id
+    db_path = os.path.join(os.environ.get("AIRFLOW_HOME", os.getcwd()), "include", "query_results.db")
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS query_results ("
+            "run_id TEXT PRIMARY KEY, status TEXT NOT NULL, text TEXT NOT NULL, "
+            "sources_json TEXT, ts TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO query_results (run_id, status, text, sources_json, ts) VALUES (?,?,?,?,?)",
+            (run_id, status, text, json.dumps(sources) if sources else None, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 with DAG(
     dag_id="postmortem_query_pipeline",
@@ -45,7 +76,8 @@ with DAG(
     @task.llm(
         llm_conn_id=LLM_CONN_ID,
         system_prompt=INPUT_GUARDRAIL_SYSTEM_PROMPT,
-        output_type=InputSafetyVerdict,
+        output_type=INPUT_SAFETY_OUTPUT_TYPE,
+        serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
     )
     def check_input_safety(question: str) -> str:
@@ -59,6 +91,7 @@ with DAG(
     @task
     def refuse(verdict: InputSafetyVerdict) -> None:
         v = verdict if isinstance(verdict, dict) else verdict.model_dump()
+        _record_result("refused", f"I can't answer that: {v['reason']}")
         raise ValueError(f"Input-safety guardrail refused this question: {v['reason']}")
 
     @task
@@ -85,7 +118,8 @@ with DAG(
     @task.llm(
         llm_conn_id=LLM_CONN_ID,
         system_prompt=GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
-        output_type=GroundednessVerdict,
+        output_type=GROUNDEDNESS_OUTPUT_TYPE,
+        serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
     )
     def check_groundedness(retrieved: dict, answer: str) -> str:
@@ -104,11 +138,16 @@ with DAG(
         print("\n=== SOURCES ===")
         for s in retrieved["sources"]:
             print(f"- {s['doc_id']} (chunk {s['chunk_index']}, distance={s['distance']:.3f})")
+        _record_result("answered", answer, sources=retrieved["sources"])
         return answer
 
     @task
     def block_answer(verdict: GroundednessVerdict) -> None:
         v = verdict if isinstance(verdict, dict) else verdict.model_dump()
+        _record_result(
+            "blocked",
+            f"I found an answer but couldn't verify it's grounded in the postmortems: {v['reason']}",
+        )
         raise ValueError(
             "Groundedness guardrail blocked this answer -- unsupported claims: "
             f"{v['unsupported_claims']} ({v['reason']})"

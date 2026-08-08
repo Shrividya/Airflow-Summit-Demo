@@ -7,15 +7,32 @@
 
 airflow:
   connections:
-    - conn_id:
-      conn_type:
+    - conn_id: pydanticai_default
+      conn_type: pydanticai
+      conn_host: https://router.huggingface.co/v1
+      conn_schema:
+      conn_login:
+      conn_password: hf_replace_with_your_token
+      conn_port:
+      conn_extra:
+        model: openai:meta-llama/Llama-3.3-70B-Instruct:novita
+    - conn_id: pydanticai_groundedness
+      conn_type: pydanticai
+      conn_host: https://router.huggingface.co/v1
+      conn_schema:
+      conn_login:
+      conn_password: hf_replace_with_your_token
+      conn_port:
+      conn_extra:
+        model: openai:meta-llama/Llama-3.3-70B-Instruct:novita
+    - conn_id: slack_default
+      conn_type: slackwebhook
       conn_host:
       conn_schema:
       conn_login:
-      conn_password:
+      conn_password: https://hooks.slack.com/services/replace_with_your_webhook_path
       conn_port:
       conn_extra:
-        example_extra_field: example-value
   pools:
     - pool_name:
       pool_slot:
