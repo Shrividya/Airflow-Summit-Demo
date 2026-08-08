@@ -6,20 +6,6 @@ remediations. The pipeline keeps that index fresh *and* correct — a green
 DAG run alone isn't enough, so every promotion to prod passes through
 quality gates, guardrails, and (on failure) human review.
 
-## Layout
-
-```
-dags/postmortem_rag_pipeline.py    Ingest DAG: build → gates/guardrails → promote or human review
-dags/postmortem_query_pipeline.py  Query DAG: retrieve → generate → guardrails → answer
-src/ingest.py                      chunking, PII/secret redaction, embedding, Chroma staging/prod
-src/evaluate.py                    quality gates (structural + RAGAS, judge responses cached)
-src/guardrails.py                  PII/secret scanner + LLM guardrail prompts/schemas
-src/query.py                       CLI: triggers postmortem_query_pipeline
-streamlit_app.py                   local UI for the same query DAG
-data/postmortems/*.md              sample source corpus
-data/eval_dataset.jsonl            golden question set for the RAGAS gate
-tests/                             offline smoke test + unit tests (see below)
-```
 
 ## How it works
 
@@ -81,14 +67,6 @@ airflow dags trigger postmortem_rag_pipeline
 python -m src.query "What caused the checkout latency spike?"
 # or:
 streamlit run streamlit_app.py
-```
-
-## Testing
-
-```bash
-python3 tests/run_smoketest.py          # offline, no network/creds — fakes chromadb/openai/ragas/airflow
-pytest tests/dags/test_dag_example.py   # DAG integrity: tags, retries, import errors
-pytest tests/test_query_results.py      # SQLite result-writer unit test
 ```
 
 ## Adapting for a real corpus
