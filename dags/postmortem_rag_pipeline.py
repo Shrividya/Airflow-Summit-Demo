@@ -17,6 +17,8 @@ from src.guardrails import (  # noqa: E402
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
     GROUNDEDNESS_OUTPUT_TYPE,
+    INFRA_TASK_RETRY_KWARGS,
+    LLM_TASK_RETRY_KWARGS,
 )
 
 SOURCE_DIR = os.environ.get("PM_RAG_SOURCE_DIR", "/usr/local/airflow/data/postmortems")
@@ -43,12 +45,7 @@ with DAG(
     rerun_with_latest_version=False,
 ):
 
-    @task(
-        retries=4,
-        retry_delay=timedelta(minutes=1),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=15),
-    )
+    @task(**INFRA_TASK_RETRY_KWARGS)
     def build_staging_index() -> dict:
         """Chunk + embed every postmortem into the STAGING collection."""
         from src.ingest import build_staging_index as _build
@@ -79,10 +76,7 @@ with DAG(
         llm_conn_id=LLM_CONN_ID,
         system_prompt=GENERATION_SYSTEM_PROMPT,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
-        retries=4,
-        retry_delay=timedelta(seconds=15),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=2),
+        **LLM_TASK_RETRY_KWARGS,
     )
     def generate_eval_answer(item: dict) -> str:
         context_block = "\n\n---\n\n".join(item["contexts"])
@@ -99,11 +93,8 @@ with DAG(
         serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
         # novita occasionally masks a rate limit as an empty response under
-        # the concurrency from .expand(); retry with backoff to clear it.
-        retries=4,
-        retry_delay=timedelta(seconds=15),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=2),
+        # the concurrency from .expand(); LLM_TASK_RETRY_KWARGS retries with backoff to clear it.
+        **LLM_TASK_RETRY_KWARGS,
     )
     def check_groundedness(item: dict) -> str:
         context_block = "\n\n---\n\n".join(item["contexts"])
@@ -115,12 +106,7 @@ with DAG(
             return v if isinstance(v, dict) else v.model_dump()
         return [{"question": item["question"], "verdict": as_dict(v)} for item, v in zip(items, verdicts)]
 
-    @task.branch(
-        retries=4,
-        retry_delay=timedelta(minutes=1),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=15),
-    )
+    @task.branch(**INFRA_TASK_RETRY_KWARGS)
     def evaluate_quality_gates(manifest: dict, generated_answers: list[dict], groundedness_verdicts: list[dict]) -> str:
         from src.evaluate import run_all_gates, record_manifest_history
         from src.ingest import IngestManifest

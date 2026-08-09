@@ -1,15 +1,3 @@
-"""Local UI: ask the postmortem RAG assistant a question without touching the
-Airflow UI or the CLI (`src/query.py`).
-
-Runs outside the Astro/Airflow containers. Triggers postmortem_query_pipeline
-over Airflow's REST API, shows task states as it runs, then reads the outcome
-from include/query_results.db -- written by `_record_result` in
-dags/postmortem_query_pipeline.py, readable here because Astro dev bind-mounts
-the project directory into the containers.
-
-    pip install streamlit requests
-    streamlit run streamlit_app.py
-"""
 from __future__ import annotations
 
 import json
@@ -22,15 +10,13 @@ import requests
 import streamlit as st
 
 AIRFLOW_BASE_URL = os.environ.get("AIRFLOW_BASE_URL", "http://localhost:8080")
-AIRFLOW_USERNAME = os.environ.get("AIRFLOW_USERNAME", "admin")
-AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD", "admin")
+AIRFLOW_USERNAME = os.environ.get("AIRFLOW_USERNAME", "airflow")
+AIRFLOW_PASSWORD = os.environ.get("AIRFLOW_PASSWORD", "airflow")
 DAG_ID = "postmortem_query_pipeline"
 RESULTS_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "include", "query_results.db")
 POLL_INTERVAL_SECONDS = 1
 POLL_TIMEOUT_SECONDS = 90
 
-# only the "safe, grounded" path tasks get a label; refuse/block_answer show
-# up once query_results.db has the final verdict
 PIPELINE_STAGES = [
     ("check_input_safety", "Checking the question isn't off-topic or a prompt injection"),
     ("retrieve_context", "Retrieving relevant postmortem excerpts"),

@@ -1,9 +1,6 @@
 """Answer a question against the PRODUCTION postmortem index. check_input_safety
 blocks prompt-injection/off-topic questions before retrieval; check_groundedness
 blocks an answer whose claims aren't supported by the retrieved context.
-
-Triggered per-question by src/query.py or streamlit_app.py, which polls
-include/query_results.db (written by _record_result below) for the answer.
 """
 from __future__ import annotations
 
@@ -11,7 +8,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from airflow.sdk import DAG, Param, get_current_context, task
 
@@ -23,6 +20,7 @@ from src.guardrails import (
     GROUNDEDNESS_OUTPUT_TYPE,
     INPUT_GUARDRAIL_SYSTEM_PROMPT,
     INPUT_SAFETY_OUTPUT_TYPE,
+    LLM_TASK_RETRY_KWARGS,
     GroundednessVerdict,
     InputSafetyVerdict,
 )
@@ -36,8 +34,6 @@ GENERATION_SYSTEM_PROMPT = (
 
 
 def _record_result(status: str, text: str, sources: list[dict] | None = None) -> None:
-    """Write this run's outcome to include/query_results.db, keyed by
-    dag_run_id, so streamlit_app.py can poll for it from outside the containers."""
     run_id = get_current_context()["dag_run"].run_id
     db_path = os.path.join(os.environ.get("AIRFLOW_HOME", os.getcwd()), "include", "query_results.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -74,12 +70,7 @@ with DAG(
         output_type=INPUT_SAFETY_OUTPUT_TYPE,
         serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
-        # novita occasionally masks a rate limit as an empty response;
-        # retry with backoff to clear it (see postmortem_rag_pipeline.py).
-        retries=4,
-        retry_delay=timedelta(seconds=15),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=2),
+        **LLM_TASK_RETRY_KWARGS,
     )
     def check_input_safety(question: str) -> str:
         return question
@@ -115,10 +106,7 @@ with DAG(
         llm_conn_id=LLM_CONN_ID,
         system_prompt=GENERATION_SYSTEM_PROMPT,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
-        retries=4,
-        retry_delay=timedelta(seconds=15),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=2),
+        **LLM_TASK_RETRY_KWARGS,
     )
     def generate_answer(retrieved: dict) -> str:
         context_block = "\n\n---\n\n".join(retrieved["contexts"])
@@ -130,12 +118,7 @@ with DAG(
         output_type=GROUNDEDNESS_OUTPUT_TYPE,
         serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
-        # novita occasionally masks a rate limit as an empty response;
-        # retry with backoff to clear it (see postmortem_rag_pipeline.py).
-        retries=4,
-        retry_delay=timedelta(seconds=15),
-        retry_exponential_backoff=True,
-        max_retry_delay=timedelta(minutes=2),
+        **LLM_TASK_RETRY_KWARGS,
     )
     def check_groundedness(retrieved: dict, answer: str) -> str:
         context_block = "\n\n---\n\n".join(retrieved["contexts"])

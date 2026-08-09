@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from pydantic import BaseModel, Field
 
@@ -97,6 +98,24 @@ merely that it seems tangential to the question."""
 
 # retries past pydantic-ai's default of 1, temperature 0 for every @task.llm call
 CACHED_INSTRUCTIONS_SETTINGS = {"retries": 2, "model_settings": {"temperature": 0}}
+
+# Airflow-level task retry/backoff for every @task.llm call -- novita occasionally
+# masks a rate limit as an empty response; retry with backoff to clear it.
+LLM_TASK_RETRY_KWARGS = {
+    "retries": 4,
+    "retry_delay": timedelta(seconds=15),
+    "retry_exponential_backoff": True,
+    "max_retry_delay": timedelta(minutes=2),
+}
+
+# Airflow-level task retry/backoff for slower, non-LLM tasks (index build, gate
+# evaluation) that can be hit by transient infra issues rather than rate limits.
+INFRA_TASK_RETRY_KWARGS = {
+    "retries": 4,
+    "retry_delay": timedelta(minutes=1),
+    "retry_exponential_backoff": True,
+    "max_retry_delay": timedelta(minutes=15),
+}
 
 
 class InputSafetyVerdict(BaseModel):

@@ -28,7 +28,7 @@ curl -H "Authorization: Bearer [redacted]" \
 Customer contact for follow-up: jane.doe@example-customer.com
 
 Debug credentials used to inspect the S3 bucket (scratch script, since
-deleted): access key.
+deleted): access key 'AKIAIOSFODNN7EXAMPLE'.
 
 ## Detection
 Caught by a documentation review before publishing, not by any automated
