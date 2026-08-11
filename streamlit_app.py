@@ -129,6 +129,7 @@ def _run_question(question: str, placeholder) -> dict:
                 return {"status": status, "text": text, "sources": sources}
 
             states = _task_states(run_id, token)
+            failed_label = None
             for task_id, label in PIPELINE_STAGES:
                 state = states.get(task_id)
                 if state == "success":
@@ -137,6 +138,24 @@ def _run_question(question: str, placeholder) -> dict:
                     st.write(f"⏳ {label}")
                 elif state == "failed":
                     st.write(f"❌ {label}")
+                    failed_label = label
+
+            if failed_label is not None:
+                # Re-check the db in case the failing task's result landed between
+                # the _poll_db call above and this task-state fetch.
+                db_row = _poll_db(run_id)
+                if db_row is not None:
+                    status, text, sources = db_row
+                    label = "Answer ready" if status == "answered" else "Blocked by a guardrail"
+                    status_box.update(label=label, state="complete" if status == "answered" else "error")
+                    return {"status": status, "text": text, "sources": sources}
+                status_box.update(label="Pipeline failed", state="error")
+                return {
+                    "status": "error",
+                    "text": f"Pipeline failed at '{failed_label}' -- check the Grid UI for run `{run_id}`.",
+                    "sources": [],
+                }
+
             time.sleep(POLL_INTERVAL_SECONDS)
 
         status_box.update(label="Timed out waiting for a result", state="error")

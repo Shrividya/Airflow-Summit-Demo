@@ -92,7 +92,9 @@ with DAG(
 
         hits = retrieve(question, collection_name=PROD_COLLECTION, k=4)
         if not hits:
-            raise ValueError("No production index found yet -- run postmortem_rag_pipeline at least once.")
+            msg = "No production index found yet -- run postmortem_rag_pipeline at least once."
+            _record_result("error", msg)
+            raise ValueError(msg)
         return {
             "question": question,
             "contexts": [h["text"] for h in hits],
