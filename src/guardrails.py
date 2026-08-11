@@ -108,13 +108,11 @@ LLM_TASK_RETRY_KWARGS = {
     "max_retry_delay": timedelta(minutes=2),
 }
 
-# Airflow-level task retry/backoff for slower, non-LLM tasks (index build, gate
-# evaluation) that can be hit by transient infra issues rather than rate limits.
 INFRA_TASK_RETRY_KWARGS = {
-    "retries": 4,
-    "retry_delay": timedelta(minutes=1),
+    "retries": 2,
+    "retry_delay": timedelta(seconds=10),
     "retry_exponential_backoff": True,
-    "max_retry_delay": timedelta(minutes=15),
+    "max_retry_delay": timedelta(minutes=1),
 }
 
 

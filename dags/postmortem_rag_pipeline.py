@@ -92,8 +92,6 @@ with DAG(
         output_type=GROUNDEDNESS_OUTPUT_TYPE,
         serialize_output=True,
         agent_params=CACHED_INSTRUCTIONS_SETTINGS,
-        # novita occasionally masks a rate limit as an empty response under
-        # the concurrency from .expand(); LLM_TASK_RETRY_KWARGS retries with backoff to clear it.
         **LLM_TASK_RETRY_KWARGS,
     )
     def check_groundedness(item: dict) -> str:
