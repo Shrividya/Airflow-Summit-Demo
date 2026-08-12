@@ -7,14 +7,11 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import DAG, Param, get_current_context, task
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.guardrails import (
+from include.guardrails import (
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
     GROUNDEDNESS_OUTPUT_TYPE,
@@ -34,7 +31,9 @@ GENERATION_SYSTEM_PROMPT = (
 
 
 def _record_result(status: str, text: str, sources: list[dict] | None = None) -> None:
-    run_id = get_current_context()["dag_run"].run_id
+    ctx = get_current_context()
+    run_id = ctx["dag_run"].run_id
+    question = ctx["params"].get("question")
     db_path = os.path.join(os.environ.get("AIRFLOW_HOME", os.getcwd()), "include", "query_results.db")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=30)
@@ -42,12 +41,12 @@ def _record_result(status: str, text: str, sources: list[dict] | None = None) ->
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS query_results ("
-            "run_id TEXT PRIMARY KEY, status TEXT NOT NULL, text TEXT NOT NULL, "
+            "run_id TEXT PRIMARY KEY, status TEXT NOT NULL, question TEXT, text TEXT NOT NULL, "
             "sources_json TEXT, ts TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT OR REPLACE INTO query_results (run_id, status, text, sources_json, ts) VALUES (?,?,?,?,?)",
-            (run_id, status, text, json.dumps(sources) if sources else None, datetime.now(timezone.utc).isoformat()),
+            "INSERT OR REPLACE INTO query_results (run_id, status, question, text, sources_json, ts) VALUES (?,?,?,?,?,?)",
+            (run_id, status, question, text, json.dumps(sources) if sources else None, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
     finally:
@@ -62,6 +61,7 @@ with DAG(
     catchup=False,
     tags=["rag", "guardrails", "common-ai", "reference-architecture"],
     params={"question": Param("", type="string", description="The question to ask the postmortem RAG assistant.")},
+    dagrun_timeout=timedelta(minutes=30),
 ):
 
     @task.llm(
@@ -88,7 +88,7 @@ with DAG(
 
     @task
     def retrieve_context(question: str) -> dict:
-        from src.ingest import retrieve, PROD_COLLECTION
+        from include.ingest import retrieve, PROD_COLLECTION
 
         hits = retrieve(question, collection_name=PROD_COLLECTION, k=4)
         if not hits:

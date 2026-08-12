@@ -1,6 +1,6 @@
 """Ingestion logic: chunking, embedding, and Chroma staging/prod, called from
 dags/postmortem_rag_pipeline.py's @task wrappers and from the query path.
-Source documents are scanned for PII/secrets (src/guardrails.py) before chunking."""
+Source documents are scanned for PII/secrets (include/guardrails.py) before chunking."""
 from __future__ import annotations
 
 import glob
@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from src.guardrails import scan_and_redact, has_hard_finding
+from include.guardrails import scan_and_redact, has_hard_finding
 from huggingface_hub import InferenceClient
 import chromadb
 
@@ -103,7 +103,8 @@ def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> Ingest
         raise ValueError(f"No source documents (*.md) found in {source_dir!r}. Check PM_RAG_SOURCE_DIR / SOURCE_DIR.")
 
     client = get_chroma_client()
-    client.delete_collection(STAGING_COLLECTION) if STAGING_COLLECTION in [c.name for c in client.list_collections()] else None
+    if STAGING_COLLECTION in [c.name for c in client.list_collections()]:
+        client.delete_collection(STAGING_COLLECTION)
     collection = client.create_collection(
         STAGING_COLLECTION,
         metadata={"embedding_model": EMBEDDING_MODEL, "run_id": run_id},

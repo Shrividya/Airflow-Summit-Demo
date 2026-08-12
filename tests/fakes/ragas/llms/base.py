@@ -1,5 +1,5 @@
 """Fake `ragas.llms.base.InstructorLLM`: returns a placeholder so
-src/evaluate.py's call pattern is exercised offline. The fake `evaluate()`
+include/evaluate.py's call pattern is exercised offline. The fake `evaluate()`
 in ragas/__init__.py ignores the llm= kwarg and scores via the word-overlap
 heuristic instead of actually calling out to `client`."""
 

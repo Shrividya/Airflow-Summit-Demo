@@ -1,12 +1,12 @@
-chromadb>=0.5
+chromadb==1.5.9
 # generation/guardrails/RAGAS judge go through HF's OpenAI-compatible router
-openai>=1.0
+openai==2.53.0
 # embeddings use InferenceClient.feature_extraction instead (HF doesn't
 # reliably support /v1/embeddings)
-huggingface_hub>=0.24
-ragas>=0.2
-datasets>=2.19
-apache-airflow-providers-common-ai[openai]>=0.1.0
-apache-airflow-providers-slack>=8.0.0
+huggingface_hub==1.26.0
+ragas==0.4.3
+datasets==5.0.1
+apache-airflow-providers-common-ai[openai]==0.6.0
+apache-airflow-providers-slack==9.10.2
 # pin: ragas imports langchain_community.chat_models.vertexai, removed in 0.4.2
 langchain-community==0.4.1

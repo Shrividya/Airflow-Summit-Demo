@@ -1,6 +1,6 @@
 """CLI: trigger the postmortem_query_pipeline DAG for a question.
 
-    python -m src.query "What caused the checkout latency spike?"
+    python -m include.query "What caused the checkout latency spike?"
 
 Watch the answer in the Airflow UI (Grid -> this run -> deliver_answer) or:
 
@@ -35,6 +35,6 @@ def ask(question: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print('Usage: python -m src.query "your question"')
+        print('Usage: python -m include.query "your question"')
         sys.exit(1)
     ask(" ".join(sys.argv[1:]))

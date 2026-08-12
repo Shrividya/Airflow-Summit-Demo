@@ -1,6 +1,6 @@
 """Fake `ragas.evaluate`: approximates with word-overlap heuristics instead
 of a real LLM judge, just enough to exercise the quality-gate branching
-logic in src/evaluate.py offline. Scores aren't meaningful as a real
+logic in include/evaluate.py offline. Scores aren't meaningful as a real
 quality signal."""
 
 

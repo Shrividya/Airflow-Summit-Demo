@@ -1,7 +1,7 @@
 """Minimal stand-in for airflow.sdk -- just enough to import-test the two
 DAG files' structure (decorators, outlets/params, task graph wiring
 including .expand() and @task.llm/@task.branch). Doesn't execute task
-bodies; those are tested directly against src/ingest.py etc. elsewhere in
+bodies; those are tested directly against include/ingest.py etc. elsewhere in
 this smoketest.
 """
 
