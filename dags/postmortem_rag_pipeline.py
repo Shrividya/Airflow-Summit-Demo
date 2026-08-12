@@ -46,11 +46,29 @@ with DAG(
 ):
 
     @task(**INFRA_TASK_RETRY_KWARGS)
-    def build_staging_index() -> dict:
-        """Chunk + embed every postmortem into the STAGING collection."""
-        from include.ingest import build_staging_index as _build
+    def plan_ingestion() -> dict:
+        """Diff source postmortems against the last promoted manifest so only
+        new/changed docs get (re-)embedded; unchanged docs are reused from prod."""
+        from include.ingest import plan_incremental_ingest
 
-        manifest = _build(SOURCE_DIR)
+        return plan_incremental_ingest(SOURCE_DIR)
+
+    @task(**LLM_TASK_RETRY_KWARGS)
+    def embed_document(doc_id: str, run_id: str) -> dict:
+        """Chunk + embed one changed/new postmortem. Mapped over plan['to_embed']
+        so a growing postmortem archive only pays embedding cost for what changed,
+        and docs embed in parallel instead of one serial batch call."""
+        from include.ingest import embed_document as _embed_document
+
+        return _embed_document(SOURCE_DIR, doc_id, run_id)
+
+    @task(**INFRA_TASK_RETRY_KWARGS)
+    def assemble_index(plan: dict, embedded_docs: list[dict]) -> dict:
+        """Build the STAGING collection from this run's freshly-embedded docs
+        plus chunks reused as-is from PROD_COLLECTION."""
+        from include.ingest import assemble_staging_index
+
+        manifest = assemble_staging_index(plan, embedded_docs)
         return manifest.__dict__
 
     @task(outlets=[postmortem_index_staging])
@@ -118,9 +136,27 @@ with DAG(
             return v if isinstance(v, dict) else v.model_dump()
         return [{"question": item["question"], "verdict": as_dict(v)} for item, v in zip(items, verdicts)]
 
+    def _alert_promotion_stalled(streak: int, results) -> None:
+        """Fires once staging has failed to promote BLOCKED_RUN_ALERT_THRESHOLD
+        runs in a row, and again every blocked run after that -- keeps nudging
+        until a promotion succeeds and resets the streak, rather than firing
+        once and going quiet on an ongoing problem."""
+        failing = "; ".join(f"{r.name}: {r.detail}" for r in results if not r.passed)
+        SlackWebhookNotifier(
+            slack_webhook_conn_id="slack_default",
+            text=(
+                f":warning: *Postmortem RAG staging hasn't promoted in {streak} consecutive runs*\n"
+                f"Failing gate(s) this run: {failing}\n"
+                "Prod index is increasingly stale. See the evaluate_quality_gates task log for detail.\n"
+                "DAG: `postmortem_rag_pipeline`"
+            ),
+        ).notify({})
+
     @task.branch(**INFRA_TASK_RETRY_KWARGS)
     def evaluate_quality_gates(manifest: dict, generated_answers: list[dict], groundedness_verdicts: list[dict]) -> str:
-        from include.evaluate import run_all_gates, record_manifest_history
+        from include.evaluate import (
+            run_all_gates, record_manifest_history, record_promotion_outcome, BLOCKED_RUN_ALERT_THRESHOLD,
+        )
         from include.ingest import IngestManifest
 
         manifest_obj = IngestManifest(**manifest)
@@ -132,7 +168,13 @@ with DAG(
         all_passed = all(r.passed for r in results)
         if all_passed:
             record_manifest_history(manifest_obj)
+            record_promotion_outcome(promoted=True)
             return "promote_to_prod"
+
+        streak = record_promotion_outcome(promoted=False)
+        print(f"[quality-gate] staging has not promoted for {streak} consecutive run(s).")
+        if streak >= BLOCKED_RUN_ALERT_THRESHOLD:
+            _alert_promotion_stalled(streak, results)
 
         pii_result = next(r for r in results if r.name == "pii_hard_block")
         if not pii_result.passed:
@@ -186,7 +228,9 @@ with DAG(
             "See task logs above for per-check detail."
         )
 
-    manifest = build_staging_index()
+    plan = plan_ingestion()
+    embedded = embed_document.partial(run_id=plan["run_id"]).expand(doc_id=plan["to_embed"])
+    manifest = assemble_index(plan, embedded)
     staged = publish_staging_asset(manifest)
     golden_set_grown = grow_golden_set()
 

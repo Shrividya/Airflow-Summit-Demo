@@ -95,59 +95,151 @@ def get_chroma_client(path: str = CHROMA_PATH) -> "chromadb.ClientAPI":
     return chromadb.PersistentClient(path=path)
 
 
-def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> IngestManifest:
-    """Chunk + embed all postmortems into the STAGING collection."""
+def _load_last_successful_manifest() -> Optional[dict]:
+    """Mirrors include/evaluate.py's _load_previous_manifest (kept separate to
+    avoid a circular import). manifest_history.json is only appended to after
+    all quality gates pass, so this is always a known-good, promoted-to-prod
+    state -- safe to diff against and to copy reused chunks out of PROD_COLLECTION."""
+    history_path = Path(CHROMA_PATH) / "manifest_history.json"
+    if not history_path.exists():
+        return None
+    history = json.loads(history_path.read_text())
+    return history[-1] if history else None
+
+
+def plan_incremental_ingest(source_dir: str, run_id: Optional[str] = None) -> dict:
+    """Diff current source docs against the last successfully-promoted manifest
+    so only new/changed postmortems need re-chunking and re-embedding; everything
+    else can be copied from PROD_COLLECTION as-is in assemble_staging_index. An
+    embedding-model change forces a full re-embed since old vectors aren't
+    comparable to new ones."""
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     docs = load_source_documents(source_dir)
     if not docs:
         raise ValueError(f"No source documents (*.md) found in {source_dir!r}. Check PM_RAG_SOURCE_DIR / SOURCE_DIR.")
 
+    # hash pre-redaction so the partial-reindex gate ignores redaction noise
+    current_hashes = {doc_id: hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] for doc_id, text in docs.items()}
+    prev = _load_last_successful_manifest()
+    prev_hashes = prev["source_doc_hashes"] if prev else {}
+    # embedding model OR chunking params changing invalidates every existing vector/chunk
+    # boundary, not just the changed docs' -- force a full re-embed rather than silently
+    # mixing old and new chunk boundaries across reused vs. re-embedded docs.
+    force_full_reembed = bool(prev) and (
+        prev["embedding_model"] != EMBEDDING_MODEL
+        or prev["chunk_size"] != CHUNK_SIZE
+        or prev["chunk_overlap"] != CHUNK_OVERLAP
+    )
+
+    to_embed = [doc_id for doc_id, h in current_hashes.items() if force_full_reembed or prev_hashes.get(doc_id) != h]
+    reused = [doc_id for doc_id in current_hashes if doc_id not in to_embed]
+    removed = sorted(set(prev_hashes) - set(current_hashes))
+
+    return {
+        "run_id": run_id,
+        "to_embed": sorted(to_embed),
+        "reused": sorted(reused),
+        "removed": removed,
+        "current_hashes": current_hashes,
+    }
+
+
+def embed_document(source_dir: str, doc_id: str, run_id: str) -> dict:
+    """Chunk + embed a single postmortem. Meant to be mapped over
+    plan['to_embed'] (see plan_incremental_ingest) so unrelated, unchanged
+    docs don't pay for each other's embedding API round-trips."""
+    raw_text = Path(os.path.join(source_dir, f"{doc_id}.md")).read_text(encoding="utf-8")
+    text, findings = scan_and_redact(raw_text)
+    chunks = _chunk_text(text)
+    embeddings = embed_texts(chunks, input_type="document")
+    ids = [f"{doc_id}::chunk-{i}" for i in range(len(chunks))]
+    metadatas = [
+        {"doc_id": doc_id, "chunk_index": i, "embedding_model": EMBEDDING_MODEL, "run_id": run_id}
+        for i in range(len(chunks))
+    ]
+    return {
+        "doc_id": doc_id,
+        "ids": ids,
+        "documents": chunks,
+        "embeddings": embeddings,
+        "metadatas": metadatas,
+        "pii_findings": findings,
+        "has_hard_block": has_hard_finding(findings),
+    }
+
+
+def assemble_staging_index(plan: dict, embedded_docs: list[dict]) -> IngestManifest:
+    """Build STAGING_COLLECTION from this run's freshly-embedded docs
+    (plan['to_embed'], from mapped embed_document calls) plus chunks copied
+    straight out of PROD_COLLECTION for everything unchanged (plan['reused'])."""
     client = get_chroma_client()
     if STAGING_COLLECTION in [c.name for c in client.list_collections()]:
         client.delete_collection(STAGING_COLLECTION)
     collection = client.create_collection(
         STAGING_COLLECTION,
-        metadata={"embedding_model": EMBEDDING_MODEL, "run_id": run_id},
+        metadata={"embedding_model": EMBEDDING_MODEL, "run_id": plan["run_id"]},
     )
 
-    all_chunks: list[str] = []
     all_ids: list[str] = []
+    all_docs: list[str] = []
+    all_embeddings: list[list[float]] = []
     all_metadatas: list[dict] = []
-    doc_hashes: dict[str, str] = {}
     pii_findings: dict[str, list] = {}
     any_hard_block = False
 
-    for doc_id, raw_text in docs.items():
-        # hash pre-redaction so the partial-reindex gate ignores redaction noise
-        doc_hashes[doc_id] = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()[:16]
-        text, findings = scan_and_redact(raw_text)
-        if findings:
-            pii_findings[doc_id] = findings
-            if has_hard_finding(findings):
-                any_hard_block = True
-        chunks = _chunk_text(text)
-        for i, chunk in enumerate(chunks):
-            all_chunks.append(chunk)
-            all_ids.append(f"{doc_id}::chunk-{i}")
-            all_metadatas.append({
-                "doc_id": doc_id,
-                "chunk_index": i,
-                "embedding_model": EMBEDDING_MODEL,
-                "run_id": run_id,
-            })
+    for item in embedded_docs:
+        all_ids.extend(item["ids"])
+        all_docs.extend(item["documents"])
+        all_embeddings.extend(item["embeddings"])
+        all_metadatas.extend(item["metadatas"])
+        if item["pii_findings"]:
+            pii_findings[item["doc_id"]] = item["pii_findings"]
+        if item["has_hard_block"]:
+            any_hard_block = True
 
-    embeddings = embed_texts(all_chunks, input_type="document")
-    collection.add(ids=all_ids, documents=all_chunks, embeddings=embeddings, metadatas=all_metadatas)
+    if plan["reused"]:
+        if PROD_COLLECTION not in [c.name for c in client.list_collections()]:
+            raise RuntimeError(
+                f"Plan expects {len(plan['reused'])} doc(s) reused from {PROD_COLLECTION!r}, but no prod "
+                "collection exists yet -- delete manifest_history.json to force a full re-index."
+            )
+        prod = client.get_collection(PROD_COLLECTION)
+        reused_set = set(plan["reused"])
+        found_doc_ids: set = set()
+        prod_data = prod.get(include=["documents", "embeddings", "metadatas"])
+        for chunk_id, doc, meta, embedding in zip(
+            prod_data["ids"], prod_data["documents"], prod_data["metadatas"], prod_data["embeddings"]
+        ):
+            if meta["doc_id"] in reused_set:
+                found_doc_ids.add(meta["doc_id"])
+                all_ids.append(chunk_id)
+                all_docs.append(doc)
+                all_embeddings.append(list(map(float, embedding)))
+                all_metadatas.append(meta)
+
+        missing = reused_set - found_doc_ids
+        if missing:
+            # prod is out of sync with the manifest we diffed against (e.g. a prior
+            # promote_to_prod failed after record_manifest_history succeeded) -- fail
+            # loudly instead of silently shipping a staging index missing these docs.
+            raise RuntimeError(
+                f"{PROD_COLLECTION!r} has no chunks for reused doc(s) {sorted(missing)}, but the last "
+                "successful manifest expected them unchanged -- delete manifest_history.json to force "
+                "a full re-index."
+            )
+
+    if all_ids:
+        collection.add(ids=all_ids, documents=all_docs, embeddings=all_embeddings, metadatas=all_metadatas)
 
     manifest = IngestManifest(
-        run_id=run_id,
-        source_doc_count=len(docs),
-        chunk_count=len(all_chunks),
-        avg_chunk_chars=sum(len(c) for c in all_chunks) / max(len(all_chunks), 1),
+        run_id=plan["run_id"],
+        source_doc_count=len(plan["to_embed"]) + len(plan["reused"]),
+        chunk_count=len(all_ids),
+        avg_chunk_chars=sum(len(d) for d in all_docs) / max(len(all_docs), 1),
         embedding_model=EMBEDDING_MODEL,
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
-        source_doc_hashes=doc_hashes,
+        source_doc_hashes=plan["current_hashes"],
         created_at=datetime.now(timezone.utc).isoformat(),
         pii_findings=pii_findings,
         has_hard_block=any_hard_block,
@@ -157,6 +249,28 @@ def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> Ingest
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(asdict(manifest), indent=2))
     return manifest
+
+
+def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> IngestManifest:
+    """Full rebuild: chunk + embed every postmortem into STAGING, ignoring any
+    previous manifest. Kept for the first-ever run and for callers (tests, CLI)
+    that want a from-scratch index; the DAG uses the incremental
+    plan_incremental_ingest / embed_document / assemble_staging_index path so
+    routine runs only re-embed docs that actually changed."""
+    run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    docs = load_source_documents(source_dir)
+    if not docs:
+        raise ValueError(f"No source documents (*.md) found in {source_dir!r}. Check PM_RAG_SOURCE_DIR / SOURCE_DIR.")
+
+    plan = {
+        "run_id": run_id,
+        "to_embed": sorted(docs.keys()),
+        "reused": [],
+        "removed": [],
+        "current_hashes": {doc_id: hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] for doc_id, text in docs.items()},
+    }
+    embedded_docs = [embed_document(source_dir, doc_id, run_id) for doc_id in plan["to_embed"]]
+    return assemble_staging_index(plan, embedded_docs)
 
 
 def promote_staging_to_prod() -> None:

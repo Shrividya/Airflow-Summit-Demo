@@ -1,8 +1,3 @@
-"""Quality gates run against the STAGING index before promotion: structural
-checks diffed against the previous IngestManifest, RAGAS scored against a
-floor, and guardrails that fail outright rather than averaging away.
-Generation/groundedness verdicts come from the DAG's mapped @task.llm tasks;
-this module just scores/branches."""
 from __future__ import annotations
 
 import json
@@ -25,6 +20,7 @@ QUERY_RESULTS_DB_PATH = os.environ.get(
     os.path.join(os.environ.get("AIRFLOW_HOME", os.getcwd()), "include", "query_results.db"),
 )
 GOLDEN_SET_MIN_ASKED_COUNT = int(os.environ.get("PM_RAG_GOLDEN_SET_MIN_ASKED_COUNT", "3"))
+BLOCKED_RUN_ALERT_THRESHOLD = int(os.environ.get("PM_RAG_BLOCKED_RUN_ALERT_THRESHOLD", "3"))
 
 # allow chunk count/size to move by this much run-over-run before blocking
 MAX_CHUNK_COUNT_DRIFT_PCT = 0.25
@@ -37,6 +33,7 @@ RAGAS_FLOORS = {
 }
 
 MANIFEST_HISTORY_PATH = Path(CHROMA_PATH) / "manifest_history.json"
+PROMOTION_STREAK_PATH = Path(CHROMA_PATH) / "promotion_streak.json"
 
 
 @dataclass
@@ -60,6 +57,19 @@ def record_manifest_history(manifest: IngestManifest) -> None:
         history = json.loads(MANIFEST_HISTORY_PATH.read_text())
     history.append(manifest.__dict__)
     MANIFEST_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2))  # keep last 20 runs
+
+
+def record_promotion_outcome(promoted: bool) -> int:
+    """Track consecutive blocked (not-promoted) runs so the DAG can alert once
+    staging has failed to promote BLOCKED_RUN_ALERT_THRESHOLD times in a row.
+    Resets to 0 on any promoted run. Returns the streak count *after* this run."""
+    streak = 0
+    if PROMOTION_STREAK_PATH.exists():
+        streak = json.loads(PROMOTION_STREAK_PATH.read_text()).get("consecutive_blocked", 0)
+    streak = 0 if promoted else streak + 1
+    PROMOTION_STREAK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROMOTION_STREAK_PATH.write_text(json.dumps({"consecutive_blocked": streak}))
+    return streak
 
 
 def _normalize_question(question: str) -> str:
