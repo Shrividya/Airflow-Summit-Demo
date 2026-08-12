@@ -1,22 +1,26 @@
-"""Quality gates run against the STAGING index before promotion: structural
-checks diffed against the previous IngestManifest, RAGAS scored against a
-floor, and guardrails that fail outright rather than averaging away.
-Generation/groundedness verdicts come from the DAG's mapped @task.llm tasks;
-this module just scores/branches."""
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from src.ingest import IngestManifest, CHROMA_PATH
+from include.ingest import IngestManifest, CHROMA_PATH
 
 GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "meta-llama/Llama-3.3-70B-Instruct:novita")
 HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 RAGAS_CACHE_DIR = os.environ.get("PM_RAG_RAGAS_CACHE_DIR", "/tmp/postmortem-rag-ragas-cache")
+
+# same computation as dags/postmortem_query_pipeline.py's _record_result
+QUERY_RESULTS_DB_PATH = os.environ.get(
+    "PM_RAG_QUERY_RESULTS_DB",
+    os.path.join(os.environ.get("AIRFLOW_HOME", os.getcwd()), "include", "query_results.db"),
+)
+GOLDEN_SET_MIN_ASKED_COUNT = int(os.environ.get("PM_RAG_GOLDEN_SET_MIN_ASKED_COUNT", "3"))
+BLOCKED_RUN_ALERT_THRESHOLD = int(os.environ.get("PM_RAG_BLOCKED_RUN_ALERT_THRESHOLD", "3"))
 
 # allow chunk count/size to move by this much run-over-run before blocking
 MAX_CHUNK_COUNT_DRIFT_PCT = 0.25
@@ -29,6 +33,7 @@ RAGAS_FLOORS = {
 }
 
 MANIFEST_HISTORY_PATH = Path(CHROMA_PATH) / "manifest_history.json"
+PROMOTION_STREAK_PATH = Path(CHROMA_PATH) / "promotion_streak.json"
 
 
 @dataclass
@@ -52,6 +57,78 @@ def record_manifest_history(manifest: IngestManifest) -> None:
         history = json.loads(MANIFEST_HISTORY_PATH.read_text())
     history.append(manifest.__dict__)
     MANIFEST_HISTORY_PATH.write_text(json.dumps(history[-20:], indent=2))  # keep last 20 runs
+
+
+def record_promotion_outcome(promoted: bool) -> int:
+    """Track consecutive blocked (not-promoted) runs so the DAG can alert once
+    staging has failed to promote BLOCKED_RUN_ALERT_THRESHOLD times in a row.
+    Resets to 0 on any promoted run. Returns the streak count *after* this run."""
+    streak = 0
+    if PROMOTION_STREAK_PATH.exists():
+        streak = json.loads(PROMOTION_STREAK_PATH.read_text()).get("consecutive_blocked", 0)
+    streak = 0 if promoted else streak + 1
+    PROMOTION_STREAK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROMOTION_STREAK_PATH.write_text(json.dumps({"consecutive_blocked": streak}))
+    return streak
+
+
+def _normalize_question(question: str) -> str:
+    return " ".join(question.strip().lower().split())
+
+
+def _load_golden_questions(eval_dataset_path: str) -> set[str]:
+    path = Path(eval_dataset_path)
+    if not path.exists():
+        return set()
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return {_normalize_question(r["question"]) for r in rows}
+
+
+def add_frequent_questions_to_golden_set(
+    eval_dataset_path: str,
+    min_asked_count: int = GOLDEN_SET_MIN_ASKED_COUNT,
+    query_results_db_path: str = QUERY_RESULTS_DB_PATH,
+) -> dict:
+    """Grow the golden eval set from real production usage: any question that
+    was asked at least `min_asked_count` times and successfully answered
+    (i.e. passed both the input-safety and groundedness guardrails in
+    dags/postmortem_query_pipeline.py -- status "answered") gets appended,
+    using its most recently delivered answer as ground_truth. Questions
+    already present in the golden set (by normalized text) are skipped."""
+    if not Path(query_results_db_path).exists():
+        return {"added": [], "candidates_seen": 0}
+
+    conn = sqlite3.connect(query_results_db_path, timeout=30)
+    try:
+        rows = conn.execute(
+            "SELECT question, text, ts FROM query_results "
+            "WHERE status = 'answered' AND question IS NOT NULL ORDER BY ts"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"added": [], "candidates_seen": 0}  # table doesn't exist yet
+    finally:
+        conn.close()
+
+    by_question: dict[str, dict] = {}
+    for question, answer, _ts in rows:
+        key = _normalize_question(question)
+        entry = by_question.setdefault(key, {"count": 0})
+        entry["count"] += 1
+        entry["question"] = question.strip()  # most recent casing/phrasing wins
+        entry["answer"] = answer  # most recent grounded answer wins
+
+    existing = _load_golden_questions(eval_dataset_path)
+    to_add = [
+        e for key, e in by_question.items()
+        if e["count"] >= min_asked_count and key not in existing
+    ]
+
+    if to_add:
+        with open(eval_dataset_path, "a") as f:
+            for e in to_add:
+                f.write(json.dumps({"question": e["question"], "ground_truth": e["answer"]}) + "\n")
+
+    return {"added": [e["question"] for e in to_add], "candidates_seen": len(by_question)}
 
 
 def check_chunking_regression(manifest: IngestManifest) -> QualityGateResult:
@@ -87,7 +164,7 @@ def check_embedding_model_drift(manifest: IngestManifest) -> QualityGateResult:
 
 
 def check_partial_reindex(manifest: IngestManifest, expected_source_dir: str) -> QualityGateResult:
-    from src.ingest import load_source_documents
+    from include.ingest import load_source_documents
 
     source_docs = load_source_documents(expected_source_dir)
     expected_ids = set(source_docs.keys())
@@ -154,7 +231,7 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
     })
 
     # novita rejects response_format: json_object/json_schema (same constraint
-    # as src/guardrails.py) but supports tool-calling, so use Mode.TOOLS
+    # as include/guardrails.py) but supports tool-calling, so use Mode.TOOLS
     patched_client = instructor.from_openai(
         OpenAI(base_url=HF_BASE_URL, api_key=HF_TOKEN), mode=instructor.Mode.TOOLS
     )

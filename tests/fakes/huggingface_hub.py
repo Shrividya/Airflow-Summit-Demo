@@ -1,6 +1,6 @@
 
 """Minimal stand-in for huggingface_hub -- just enough of InferenceClient's
-feature_extraction to exercise src/ingest.py's embed_texts (deterministic
+feature_extraction to exercise include/ingest.py's embed_texts (deterministic
 hash-based vectors, enough for the fake chromadb's cosine-similarity ranking
 to be meaningful)."""
 import hashlib

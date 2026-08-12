@@ -1,19 +1,16 @@
 """Ingest incident postmortems into a quality-gated, guardrailed RAG index.
-Gate checks against STAGING before promotion live in src/evaluate.py."""
+Gate checks against STAGING before promotion live in include/evaluate.py."""
 from __future__ import annotations
 
 import json
 import os
-import sys
 from datetime import datetime, timedelta
 
 from airflow.sdk import DAG, Asset, task
 from airflow.providers.standard.operators.hitl import ApprovalOperator
 from airflow.providers.slack.notifications.slack_webhook import SlackWebhookNotifier
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.guardrails import (  # noqa: E402
+from include.guardrails import (
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
     GROUNDEDNESS_OUTPUT_TYPE,
@@ -43,14 +40,35 @@ with DAG(
     catchup=False,
     tags=["rag", "quality-gates", "guardrails", "common-ai", "reference-architecture"],
     rerun_with_latest_version=False,
+    # longer than quality_gate_review's 1-day response_timeout so a pending
+    # human approval doesn't get killed out from under it.
+    dagrun_timeout=timedelta(days=2),
 ):
 
     @task(**INFRA_TASK_RETRY_KWARGS)
-    def build_staging_index() -> dict:
-        """Chunk + embed every postmortem into the STAGING collection."""
-        from src.ingest import build_staging_index as _build
+    def plan_ingestion() -> dict:
+        """Diff source postmortems against the last promoted manifest so only
+        new/changed docs get (re-)embedded; unchanged docs are reused from prod."""
+        from include.ingest import plan_incremental_ingest
 
-        manifest = _build(SOURCE_DIR)
+        return plan_incremental_ingest(SOURCE_DIR)
+
+    @task(**LLM_TASK_RETRY_KWARGS)
+    def embed_document(doc_id: str, run_id: str) -> dict:
+        """Chunk + embed one changed/new postmortem. Mapped over plan['to_embed']
+        so a growing postmortem archive only pays embedding cost for what changed,
+        and docs embed in parallel instead of one serial batch call."""
+        from include.ingest import embed_document as _embed_document
+
+        return _embed_document(SOURCE_DIR, doc_id, run_id)
+
+    @task(**INFRA_TASK_RETRY_KWARGS)
+    def assemble_index(plan: dict, embedded_docs: list[dict]) -> dict:
+        """Build the STAGING collection from this run's freshly-embedded docs
+        plus chunks reused as-is from PROD_COLLECTION."""
+        from include.ingest import assemble_staging_index
+
+        manifest = assemble_staging_index(plan, embedded_docs)
         return manifest.__dict__
 
     @task(outlets=[postmortem_index_staging])
@@ -58,8 +76,22 @@ with DAG(
         return manifest
 
     @task
+    def grow_golden_set() -> dict:
+        """Promote frequently-asked, guardrail-validated production questions
+        (from postmortem_query_pipeline's query_results.db) into the golden
+        eval set before this run's quality gates evaluate against it."""
+        from include.evaluate import add_frequent_questions_to_golden_set
+
+        result = add_frequent_questions_to_golden_set(EVAL_DATASET_PATH)
+        if result["added"]:
+            print(f"[grow_golden_set] Added {len(result['added'])} frequently asked question(s): {result['added']}")
+        else:
+            print(f"[grow_golden_set] No new questions met the frequency threshold ({result['candidates_seen']} candidates seen).")
+        return result
+
+    @task
     def retrieve_eval_contexts(manifest: dict) -> list[dict]:
-        from src.ingest import retrieve, STAGING_COLLECTION
+        from include.ingest import retrieve, STAGING_COLLECTION
 
         rows = [json.loads(line) for line in open(EVAL_DATASET_PATH) if line.strip()]
         items = []
@@ -104,10 +136,28 @@ with DAG(
             return v if isinstance(v, dict) else v.model_dump()
         return [{"question": item["question"], "verdict": as_dict(v)} for item, v in zip(items, verdicts)]
 
+    def _alert_promotion_stalled(streak: int, results) -> None:
+        """Fires once staging has failed to promote BLOCKED_RUN_ALERT_THRESHOLD
+        runs in a row, and again every blocked run after that -- keeps nudging
+        until a promotion succeeds and resets the streak, rather than firing
+        once and going quiet on an ongoing problem."""
+        failing = "; ".join(f"{r.name}: {r.detail}" for r in results if not r.passed)
+        SlackWebhookNotifier(
+            slack_webhook_conn_id="slack_default",
+            text=(
+                f":warning: *Postmortem RAG staging hasn't promoted in {streak} consecutive runs*\n"
+                f"Failing gate(s) this run: {failing}\n"
+                "Prod index is increasingly stale. See the evaluate_quality_gates task log for detail.\n"
+                "DAG: `postmortem_rag_pipeline`"
+            ),
+        ).notify({})
+
     @task.branch(**INFRA_TASK_RETRY_KWARGS)
     def evaluate_quality_gates(manifest: dict, generated_answers: list[dict], groundedness_verdicts: list[dict]) -> str:
-        from src.evaluate import run_all_gates, record_manifest_history
-        from src.ingest import IngestManifest
+        from include.evaluate import (
+            run_all_gates, record_manifest_history, record_promotion_outcome, BLOCKED_RUN_ALERT_THRESHOLD,
+        )
+        from include.ingest import IngestManifest
 
         manifest_obj = IngestManifest(**manifest)
         results = run_all_gates(manifest_obj, SOURCE_DIR, generated_answers, groundedness_verdicts)
@@ -118,7 +168,13 @@ with DAG(
         all_passed = all(r.passed for r in results)
         if all_passed:
             record_manifest_history(manifest_obj)
+            record_promotion_outcome(promoted=True)
             return "promote_to_prod"
+
+        streak = record_promotion_outcome(promoted=False)
+        print(f"[quality-gate] staging has not promoted for {streak} consecutive run(s).")
+        if streak >= BLOCKED_RUN_ALERT_THRESHOLD:
+            _alert_promotion_stalled(streak, results)
 
         pii_result = next(r for r in results if r.name == "pii_hard_block")
         if not pii_result.passed:
@@ -127,7 +183,7 @@ with DAG(
 
     @task(outlets=[postmortem_index_prod])
     def promote_to_prod() -> str:
-        from src.ingest import promote_staging_to_prod
+        from include.ingest import promote_staging_to_prod
 
         promote_staging_to_prod()
         return "promoted"
@@ -172,10 +228,14 @@ with DAG(
             "See task logs above for per-check detail."
         )
 
-    manifest = build_staging_index()
+    plan = plan_ingestion()
+    embedded = embed_document.partial(run_id=plan["run_id"]).expand(doc_id=plan["to_embed"])
+    manifest = assemble_index(plan, embedded)
     staged = publish_staging_asset(manifest)
+    golden_set_grown = grow_golden_set()
 
     eval_items = retrieve_eval_contexts(staged)
+    golden_set_grown >> eval_items
     eval_answers = generate_eval_answer.expand(item=eval_items)
     generated = zip_generated_answers(eval_items, eval_answers)
 

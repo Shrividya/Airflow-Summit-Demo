@@ -19,7 +19,7 @@ still fails loudly and prod keeps serving the last known-good index.
 **Query** (`postmortem_query_pipeline`): a question is checked for
 safety/prompt-injection before retrieval, an answer is generated from
 retrieved context, and the answer is checked for groundedness before
-delivery. Triggered via `python -m src.query "..."` or `streamlit_app.py`.
+delivery. Triggered via `python -m include.query "..."` or `streamlit_app.py`.
 
 Both DAGs run LLM calls through `apache-airflow-providers-common-ai`
 (`@task.llm`), so generation and every guardrail check show up as its own
@@ -64,7 +64,7 @@ Astro CLI connection setup.
 ```bash
 airflow dags trigger postmortem_rag_pipeline
 
-python -m src.query "What caused the checkout latency spike?"
+python -m include.query "What caused the checkout latency spike?"
 # or:
 streamlit run streamlit_app.py
 ```
@@ -77,9 +77,9 @@ streamlit run streamlit_app.py
   hand-written golden set since RAGAS's `context_recall` needs ground truth.
 - Replace `schedule=None` with an Asset-based schedule tied to your
   tracker's webhook.
-- Re-baseline the RAGAS floors in `src/evaluate.py` against your own
+- Re-baseline the RAGAS floors in `include/evaluate.py` against your own
   "known good" index rather than trusting the defaults.
-- Extend `SENSITIVE_PATTERNS` in `src/guardrails.py` with your org's secret
+- Extend `SENSITIVE_PATTERNS` in `include/guardrails.py` with your org's secret
   formats, and tune both guardrail prompts against real Q&A before trusting
   them to block automatically.
 - Point `security_incident_review`'s Slack alert and response timeout at

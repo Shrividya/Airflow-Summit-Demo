@@ -1,5 +1,5 @@
 """Hard pass/fail guardrails, as opposed to the scored quality gates in
-src/evaluate.py. scan_and_redact runs at ingest time; InputSafetyVerdict and
+include/evaluate.py. scan_and_redact runs at ingest time; InputSafetyVerdict and
 GroundednessVerdict back the query-time @task.llm checks in the DAGs."""
 from __future__ import annotations
 
@@ -129,6 +129,6 @@ class GroundednessVerdict(BaseModel):
 
 # Plain BaseModel output types -> pydantic-ai uses tool-call structured output
 # instead of response_format: json_object. novita supports tool-calling but
-# rejects response_format outright (same constraint as src/evaluate.py).
+# rejects response_format outright (same constraint as include/evaluate.py).
 INPUT_SAFETY_OUTPUT_TYPE = InputSafetyVerdict
 GROUNDEDNESS_OUTPUT_TYPE = GroundednessVerdict

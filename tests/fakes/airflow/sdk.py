@@ -1,7 +1,7 @@
 """Minimal stand-in for airflow.sdk -- just enough to import-test the two
 DAG files' structure (decorators, outlets/params, task graph wiring
 including .expand() and @task.llm/@task.branch). Doesn't execute task
-bodies; those are tested directly against src/ingest.py etc. elsewhere in
+bodies; those are tested directly against include/ingest.py etc. elsewhere in
 this smoketest.
 """
 
@@ -34,10 +34,27 @@ class _XComArg:
     def __rrshift__(self, other):
         return self
 
+    def __getitem__(self, key):
+        # real XComArg supports subscripting a dict-returning task's result
+        # (e.g. plan["to_embed"]); just stay a lazy stand-in for wiring tests.
+        return _XComArg(self.fn, self.args, {**self.kwargs, "__key__": key})
+
+
+class _PartialTaskWrapper:
+    """Stand-in for the object real TaskFlow's `task.partial(**kw)` returns,
+    which only supports `.expand(...)` (matching .partial().expand() mapped-task wiring)."""
+    def __init__(self, fn, partial_kwargs):
+        self.fn = fn
+        self.partial_kwargs = partial_kwargs
+
+    def expand(self, **kw):
+        return _XComArg(self.fn, (), {**self.partial_kwargs, **kw})
+
 
 class _TaskWrapper:
-    """Supports both `wrapper(...)` and `wrapper.expand(...)`, matching
-    real TaskFlow's API surface closely enough to import-test wiring."""
+    """Supports `wrapper(...)`, `wrapper.expand(...)`, and
+    `wrapper.partial(...).expand(...)`, matching real TaskFlow's API surface
+    closely enough to import-test wiring."""
     def __init__(self, fn):
         self.fn = fn
         self.__name__ = getattr(fn, "__name__", "task")
@@ -47,6 +64,9 @@ class _TaskWrapper:
 
     def expand(self, **kw):
         return _XComArg(self.fn, (), kw)
+
+    def partial(self, **kw):
+        return _PartialTaskWrapper(self.fn, kw)
 
 
 def _wrap(fn):
