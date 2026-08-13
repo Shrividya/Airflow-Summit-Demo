@@ -107,6 +107,12 @@ task.branch = _branch
 task.llm = _llm
 
 
+def get_current_context():
+    """Stand-in for airflow.sdk.get_current_context -- returns an empty dict
+    since only import-time wiring is under test, not task execution."""
+    return {}
+
+
 class DAG:
     def __init__(self, dag_id, **kwargs):
         self.dag_id = dag_id

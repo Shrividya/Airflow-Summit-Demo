@@ -187,3 +187,6 @@ dags/.DS_Store
 Dags/.airflowignore
 .idea/*
 .astro
+
+# runtime state, not source
+include/query_results.db
