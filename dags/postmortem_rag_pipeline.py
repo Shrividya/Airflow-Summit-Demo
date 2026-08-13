@@ -1,5 +1,3 @@
-"""Ingest incident postmortems into a quality-gated, guardrailed RAG index.
-Gate checks against STAGING before promotion live in include/evaluate.py."""
 from __future__ import annotations
 
 import json
@@ -21,7 +19,6 @@ from include.guardrails import (
 SOURCE_DIR = os.environ.get("PM_RAG_SOURCE_DIR", "/usr/local/airflow/data/postmortems")
 EVAL_DATASET_PATH = os.environ.get("PM_RAG_EVAL_DATASET", "/usr/local/airflow/data/eval_dataset.jsonl")
 LLM_CONN_ID = os.environ.get("PM_RAG_LLM_CONN_ID", "pydanticai_default")
-# larger model than LLM_CONN_ID -- groundedness judging needs stronger claim attribution
 GROUNDEDNESS_LLM_CONN_ID = os.environ.get("PM_RAG_GROUNDEDNESS_LLM_CONN_ID", "pydanticai_groundedness")
 
 GENERATION_SYSTEM_PROMPT = (
@@ -47,41 +44,33 @@ with DAG(
 
     @task(**INFRA_TASK_RETRY_KWARGS)
     def plan_ingestion() -> dict:
-        """Diff source postmortems against the last promoted manifest so only
-        new/changed docs get (re-)embedded; unchanged docs are reused from prod."""
         from include.ingest import plan_incremental_ingest
-
         return plan_incremental_ingest(SOURCE_DIR)
 
-    @task(**LLM_TASK_RETRY_KWARGS)
-    def embed_document(doc_id: str, run_id: str) -> dict:
-        """Chunk + embed one changed/new postmortem. Mapped over plan['to_embed']
-        so a growing postmortem archive only pays embedding cost for what changed,
-        and docs embed in parallel instead of one serial batch call."""
-        from include.ingest import embed_document as _embed_document
 
-        return _embed_document(SOURCE_DIR, doc_id, run_id)
+
+    @task(**LLM_TASK_RETRY_KWARGS)
+    def embed_document(doc_id: str, ingest_run_id: str) -> dict:
+        from include.ingest import embed_document as _embed_document
+        return _embed_document(SOURCE_DIR, doc_id, ingest_run_id)
+
+
 
     @task(**INFRA_TASK_RETRY_KWARGS)
     def assemble_index(plan: dict, embedded_docs: list[dict]) -> dict:
-        """Build the STAGING collection from this run's freshly-embedded docs
-        plus chunks reused as-is from PROD_COLLECTION."""
         from include.ingest import assemble_staging_index
-
         manifest = assemble_staging_index(plan, embedded_docs)
         return manifest.__dict__
+
 
     @task(outlets=[postmortem_index_staging])
     def publish_staging_asset(manifest: dict) -> dict:
         return manifest
 
+
     @task
     def grow_golden_set() -> dict:
-        """Promote frequently-asked, guardrail-validated production questions
-        (from postmortem_query_pipeline's query_results.db) into the golden
-        eval set before this run's quality gates evaluate against it."""
         from include.evaluate import add_frequent_questions_to_golden_set
-
         result = add_frequent_questions_to_golden_set(EVAL_DATASET_PATH)
         if result["added"]:
             print(f"[grow_golden_set] Added {len(result['added'])} frequently asked question(s): {result['added']}")
@@ -89,10 +78,10 @@ with DAG(
             print(f"[grow_golden_set] No new questions met the frequency threshold ({result['candidates_seen']} candidates seen).")
         return result
 
+
     @task
     def retrieve_eval_contexts(manifest: dict) -> list[dict]:
         from include.ingest import retrieve, STAGING_COLLECTION
-
         rows = [json.loads(line) for line in open(EVAL_DATASET_PATH) if line.strip()]
         items = []
         for row in rows:
@@ -137,10 +126,6 @@ with DAG(
         return [{"question": item["question"], "verdict": as_dict(v)} for item, v in zip(items, verdicts)]
 
     def _alert_promotion_stalled(streak: int, results) -> None:
-        """Fires once staging has failed to promote BLOCKED_RUN_ALERT_THRESHOLD
-        runs in a row, and again every blocked run after that -- keeps nudging
-        until a promotion succeeds and resets the streak, rather than firing
-        once and going quiet on an ongoing problem."""
         failing = "; ".join(f"{r.name}: {r.detail}" for r in results if not r.passed)
         SlackWebhookNotifier(
             slack_webhook_conn_id="slack_default",
@@ -229,7 +214,7 @@ with DAG(
         )
 
     plan = plan_ingestion()
-    embedded = embed_document.partial(run_id=plan["run_id"]).expand(doc_id=plan["to_embed"])
+    embedded = embed_document.partial(ingest_run_id=plan["run_id"]).expand(doc_id=plan["to_embed"])
     manifest = assemble_index(plan, embedded)
     staged = publish_staging_asset(manifest)
     golden_set_grown = grow_golden_set()

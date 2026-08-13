@@ -108,11 +108,7 @@ def _load_last_successful_manifest() -> Optional[dict]:
 
 
 def plan_incremental_ingest(source_dir: str, run_id: Optional[str] = None) -> dict:
-    """Diff current source docs against the last successfully-promoted manifest
-    so only new/changed postmortems need re-chunking and re-embedding; everything
-    else can be copied from PROD_COLLECTION as-is in assemble_staging_index. An
-    embedding-model change forces a full re-embed since old vectors aren't
-    comparable to new ones."""
+    """ To re-ingest only the changes instead of the whole document set"""
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     docs = load_source_documents(source_dir)
     if not docs:
