@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta
 
 from airflow.sdk import DAG, Asset, task
-from airflow.providers.standard.operators.hitl import ApprovalOperator
+from airflow.providers.standard.operators.hitl import HITLOperator
 from airflow.providers.slack.notifications.slack_webhook import SlackWebhookNotifier
 
 from include.guardrails import (
@@ -28,6 +28,9 @@ GENERATION_SYSTEM_PROMPT = (
 
 postmortem_index_staging = Asset("postmortem_index_staging")
 postmortem_index_prod = Asset("postmortem_index_prod")
+
+QUALITY_GATE_ACK_OPTION = "Acknowledged - block promotion"
+QUALITY_GATE_OVERRIDE_OPTION = "Override - promote anyway"
 
 with DAG(
     dag_id="postmortem_rag_pipeline",
@@ -170,14 +173,14 @@ with DAG(
             return "security_incident_review"
         return "quality_gate_review"
 
-    @task(outlets=[postmortem_index_prod])
+    @task(outlets=[postmortem_index_prod], trigger_rule="none_failed_min_one_success")
     def promote_to_prod() -> str:
         from include.ingest import promote_staging_to_prod
 
         promote_staging_to_prod()
         return "promoted"
 
-    security_incident_review = ApprovalOperator(
+    security_incident_review = HITLOperator(
         task_id="security_incident_review",
         subject="URGENT: secret/credential leak detected in postmortem RAG staging index",
         body=(
@@ -187,6 +190,7 @@ with DAG(
             "source postmortem is re-ingested. See the evaluate_quality_gates task log "
             "for the exact finding(s)."
         ),
+        options=["Acknowledged"],
         response_timeout=timedelta(hours=4),
         notifiers=SlackWebhookNotifier(
             slack_webhook_conn_id="slack_default",
@@ -200,15 +204,25 @@ with DAG(
         ),
     )
 
-    quality_gate_review = ApprovalOperator(
+    quality_gate_review = HITLOperator(
         task_id="quality_gate_review",
         subject="Postmortem RAG staging promotion blocked by a quality gate",
         body=(
             "One or more non-security quality gates failed. Prod index was NOT updated. "
-            "See the evaluate_quality_gates task log for per-check detail."
+            "See the evaluate_quality_gates task log for per-check detail.\n\n"
+            f'Choose "{QUALITY_GATE_OVERRIDE_OPTION}" only if you have confirmed the '
+            "failing gate(s) are a false positive for this run -- this promotes staging "
+            "to prod as-is, skipping the gate(s) that failed."
         ),
+        options=[QUALITY_GATE_ACK_OPTION, QUALITY_GATE_OVERRIDE_OPTION],
         response_timeout=timedelta(days=1),
     )
+
+    @task.branch
+    def route_quality_gate_review(response: dict) -> str:
+        if QUALITY_GATE_OVERRIDE_OPTION in response["chosen_options"]:
+            return "promote_to_prod"
+        return "block_promotion"
 
     @task(trigger_rule="none_failed_min_one_success")
     def block_promotion() -> None:
@@ -233,7 +247,12 @@ with DAG(
     groundedness_verdicts = zip_groundedness_verdicts(generated, groundedness_raw)
 
     branch = evaluate_quality_gates(staged, generated, groundedness_verdicts)
+    promote = promote_to_prod()
     block = block_promotion()
-    branch >> promote_to_prod()
+    branch >> promote
     branch >> security_incident_review >> block
-    branch >> quality_gate_review >> block
+
+    quality_gate_route = route_quality_gate_review(quality_gate_review.output)
+    branch >> quality_gate_review >> quality_gate_route
+    quality_gate_route >> promote
+    quality_gate_route >> block
