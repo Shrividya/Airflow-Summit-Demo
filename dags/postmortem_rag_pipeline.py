@@ -48,6 +48,10 @@ with DAG(
         return plan_incremental_ingest(SOURCE_DIR)
 
 
+    @task
+    def docs_to_embed(plan: dict) -> list[str]:
+        return plan["to_embed"]
+
 
     @task(**LLM_TASK_RETRY_KWARGS)
     def embed_document(doc_id: str, ingest_run_id: str) -> dict:
@@ -214,7 +218,8 @@ with DAG(
         )
 
     plan = plan_ingestion()
-    embedded = embed_document.partial(ingest_run_id=plan["run_id"]).expand(doc_id=plan["to_embed"])
+    to_embed = docs_to_embed(plan)
+    embedded = embed_document.partial(ingest_run_id=plan["run_id"]).expand(doc_id=to_embed)
     manifest = assemble_index(plan, embedded)
     staged = publish_staging_asset(manifest)
     golden_set_grown = grow_golden_set()
