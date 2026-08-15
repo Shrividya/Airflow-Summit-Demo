@@ -40,8 +40,8 @@ def check(name, condition, detail=""):
         print(f"  [FAIL] {name} -- {detail}")
 
 
-import include.query as query_mod
-from include.ingest import (
+import include.query as query_mod  # noqa: E402
+from include.ingest import (  # noqa: E402
     PROD_COLLECTION,
     STAGING_COLLECTION,
     build_staging_index,
@@ -103,7 +103,7 @@ check(
 )
 
 print("\n=== 2. quality gates against a fresh baseline (no prior history) ===")
-from include.evaluate import (
+from include.evaluate import (  # noqa: E402
     MANIFEST_HISTORY_PATH,
     check_answer_guardrails,
     check_chunking_regression,
@@ -182,7 +182,7 @@ check(f"missing doc ({missing_doc}) is correctly rejected",
       not r_partial.passed, r_partial.detail)
 
 print("\n=== 7. retrieval quality gate runs end-to-end against fake RAGAS ===")
-from include.evaluate import check_retrieval_quality
+from include.evaluate import check_retrieval_quality  # noqa: E402
 
 eval_path = os.path.join(PROJECT_DIR, "data", "eval_dataset.jsonl")
 with open(eval_path, encoding="utf-8") as f:
@@ -232,7 +232,7 @@ class _FakeCompletedProcess:
     stderr = ""
 
 
-def _fake_run(cmd, **kwargs):
+def _fake_run(cmd, **kwargs):  # noqa: ARG001
     """Fake subprocess.run for testing."""
     captured["cmd"] = cmd
     return _FakeCompletedProcess()
@@ -263,19 +263,19 @@ print("\n=== 10. DAG files import and wire up under fake airflow.sdk ===")
 dag_path = os.path.join(PROJECT_DIR, "dags")
 sys.path.insert(0, dag_path)
 try:
-    import postmortem_rag_pipeline  # noqa: F401
+    import postmortem_rag_pipeline  # noqa: F401  # pylint: disable=unused-import
     check("dags/postmortem_rag_pipeline.py imports cleanly", True)
 except Exception as e:  # pylint: disable=broad-except
     check("dags/postmortem_rag_pipeline.py imports cleanly", False, repr(e))
 
 try:
-    import postmortem_query_pipeline  # noqa: F401
+    import postmortem_query_pipeline  # noqa: F401  # pylint: disable=unused-import
     check("dags/postmortem_query_pipeline.py imports cleanly", True)
 except Exception as e:  # pylint: disable=broad-except
     check("dags/postmortem_query_pipeline.py imports cleanly", False, repr(e))
 
 print("\n=== 11. grow_golden_set: promoting frequently-asked questions ===")
-from include.evaluate import add_frequent_questions_to_golden_set
+from include.evaluate import add_frequent_questions_to_golden_set  # noqa: E402
 
 golden_tmp_dir = tempfile.mkdtemp(prefix="pm-rag-smoketest-golden-")
 fake_db_path = os.path.join(golden_tmp_dir, "query_results.db")

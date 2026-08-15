@@ -15,9 +15,11 @@ def test_record_result_writes_row():
 
     with tempfile.TemporaryDirectory() as tmp:
         fake_context = {"dag_run": MagicMock(run_id="run-1")}
-        with patch.dict(os.environ, {"AIRFLOW_HOME": tmp}):
-            with patch("dags.postmortem_query_pipeline.get_current_context", return_value=fake_context):
-                _record_result("answered", "the answer")
+        with (
+            patch.dict(os.environ, {"AIRFLOW_HOME": tmp}),
+            patch("dags.postmortem_query_pipeline.get_current_context", return_value=fake_context),
+        ):
+            _record_result("answered", "the answer")
 
         conn = sqlite3.connect(os.path.join(tmp, "include", "query_results.db"))
         row = conn.execute(
@@ -33,9 +35,11 @@ def test_record_result_stores_sources_as_json():
     sources = [{"doc_id": "INC-1", "chunk_index": 0, "distance": 0.123}]
     with tempfile.TemporaryDirectory() as tmp:
         fake_context = {"dag_run": MagicMock(run_id="run-1")}
-        with patch.dict(os.environ, {"AIRFLOW_HOME": tmp}):
-            with patch("dags.postmortem_query_pipeline.get_current_context", return_value=fake_context):
-                _record_result("answered", "the answer", sources=sources)
+        with (
+            patch.dict(os.environ, {"AIRFLOW_HOME": tmp}),
+            patch("dags.postmortem_query_pipeline.get_current_context", return_value=fake_context),
+        ):
+            _record_result("answered", "the answer", sources=sources)
 
         conn = sqlite3.connect(os.path.join(tmp, "include", "query_results.db"))
         row = conn.execute(
@@ -51,10 +55,12 @@ def test_record_result_overwrites_same_run_id():
 
     with tempfile.TemporaryDirectory() as tmp:
         fake_context = {"dag_run": MagicMock(run_id="run-1")}
-        with patch.dict(os.environ, {"AIRFLOW_HOME": tmp}):
-            with patch("dags.postmortem_query_pipeline.get_current_context", return_value=fake_context):
-                _record_result("refused", "first")
-                _record_result("answered", "second")
+        with (
+            patch.dict(os.environ, {"AIRFLOW_HOME": tmp}),
+            patch("dags.postmortem_query_pipeline.get_current_context", return_value=fake_context),
+        ):
+            _record_result("refused", "first")
+            _record_result("answered", "second")
 
         conn = sqlite3.connect(os.path.join(tmp, "include", "query_results.db"))
         rows = conn.execute("SELECT status, text FROM query_results WHERE run_id = ?", ("run-1",)).fetchall()

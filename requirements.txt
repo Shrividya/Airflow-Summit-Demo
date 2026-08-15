@@ -6,3 +6,5 @@ datasets==5.0.1
 apache-airflow-providers-common-ai[openai]==0.6.0
 apache-airflow-providers-slack==9.10.2
 langchain-community==0.4.1
+streamlit==1.61.1
+requests==2.34.2

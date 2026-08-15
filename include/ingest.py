@@ -82,7 +82,7 @@ def load_source_documents(source_dir: str) -> dict[str, str]:
     return docs
 
 
-def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:
+def embed_texts(texts: list[str], input_type: str = "document") -> list[list[float]]:  # noqa: ARG001
     """`input_type` is unused by all-MiniLM-L6-v2, kept for parity with
     asymmetric embedding APIs."""
     if not texts:
@@ -205,7 +205,7 @@ def assemble_staging_index(plan: dict, embedded_docs: list[dict]) -> IngestManif
         found_doc_ids: set = set()
         prod_data = prod.get(include=["documents", "embeddings", "metadatas"])
         for chunk_id, doc, meta, embedding in zip(
-            prod_data["ids"], prod_data["documents"], prod_data["metadatas"], prod_data["embeddings"]
+            prod_data["ids"], prod_data["documents"], prod_data["metadatas"], prod_data["embeddings"], strict=True
         ):
             if meta["doc_id"] in reused_set:
                 found_doc_ids.add(meta["doc_id"])
@@ -296,6 +296,6 @@ def retrieve(query: str, collection_name: str = PROD_COLLECTION, k: int = 4) -> 
     query_embedding = embed_texts([query], input_type="query")[0]
     result = collection.query(query_embeddings=[query_embedding], n_results=k)
     hits = []
-    for doc, meta, dist in zip(result["documents"][0], result["metadatas"][0], result["distances"][0]):
+    for doc, meta, dist in zip(result["documents"][0], result["metadatas"][0], result["distances"][0], strict=True):
         hits.append({"text": doc, "metadata": meta, "distance": dist})
     return hits

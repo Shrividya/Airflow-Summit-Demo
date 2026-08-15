@@ -16,7 +16,7 @@ class InferenceClient:
     def __init__(self, *a, **kw):
         pass
 
-    def feature_extraction(self, texts, **kw):
+    def feature_extraction(self, texts, **kw):  # noqa: ARG002
         if isinstance(texts, str):
             texts = [texts]
         return [_fake_embed(t) for t in texts]

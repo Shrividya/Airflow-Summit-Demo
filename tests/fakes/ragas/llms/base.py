@@ -5,7 +5,7 @@ heuristic instead of actually calling out to `client`."""
 
 
 class _FakeRagasLLM:
-    def __init__(self, client, model, provider, model_args=None, cache=None, **kwargs):
+    def __init__(self, client, model, provider, model_args=None, cache=None, **kwargs):  # noqa: ARG002
         self.client = client
         self.model = model
         self.provider = provider

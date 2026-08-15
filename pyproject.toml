@@ -25,8 +25,27 @@ known-first-party = ["airflow"]
 disable = [
     "C0103",  # invalid-name
     "C0114",  # missing-module-docstring
+    "C0115",  # missing-class-docstring
+    "C0116",  # missing-function-docstring
+    "C0301",  # line-too-long
+    "C0412",  # ungrouped-imports
+    "C0413",  # wrong-import-position
+    "C0415",  # import-outside-toplevel
+    "R0801",  # duplicate-code
+    "R0902",  # too-many-instance-attributes
+    "R0903",  # too-few-public-methods
     "R0913",  # too-many-arguments
+    "R0914",  # too-many-locals
+    "W0104",  # pointless-statement
+    "W0106",  # expression-not-assigned
+    "W0613",  # unused-argument
+    "W0621",  # redefined-outer-name
+    "W0622",  # redefined-builtin
+    "W1510",  # subprocess-run-check
 ]
 
 [tool.pylint.format]
 max-line-length = 100
+
+[tool.pylint.typecheck]
+ignored-modules = ["airflow"]

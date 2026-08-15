@@ -13,5 +13,5 @@ class Mode:
     TOOLS = "tools"
 
 
-def from_openai(client, mode=None, **kwargs):
+def from_openai(client, mode=None, **kwargs):  # noqa: ARG001
     return client

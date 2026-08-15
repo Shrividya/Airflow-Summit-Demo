@@ -79,7 +79,7 @@ def _load_golden_questions(eval_dataset_path: str) -> set[str]:
     path = Path(eval_dataset_path)
     if not path.exists():
         return set()
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return {_normalize_question(r["question"]) for r in rows}
 
 
@@ -123,7 +123,7 @@ def add_frequent_questions_to_golden_set(
     ]
 
     if to_add:
-        with open(eval_dataset_path, "a") as f:
+        with open(eval_dataset_path, "a", encoding="utf-8") as f:
             for e in to_add:
                 f.write(json.dumps({"question": e["question"], "ground_truth": e["answer"]}) + "\n")
 

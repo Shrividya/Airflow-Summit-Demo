@@ -18,7 +18,7 @@ class _Collection:
         self._embeddings.extend(embeddings)
         self._metadatas.extend(metadatas)
 
-    def get(self, include=None):
+    def get(self, include=None):  # noqa: ARG002
         return {
             "ids": self._ids,
             "documents": self._documents,
@@ -30,13 +30,13 @@ class _Collection:
         q = query_embeddings[0]
 
         def cosine(a, b):
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=True))
             na = math.sqrt(sum(x * x for x in a)) or 1e-9
             nb = math.sqrt(sum(y * y for y in b)) or 1e-9
             return dot / (na * nb)
 
         scored = sorted(
-            zip(self._ids, self._documents, self._metadatas, self._embeddings),
+            zip(self._ids, self._documents, self._metadatas, self._embeddings, strict=True),
             key=lambda row: -cosine(q, row[3]),
         )[:n_results]
         ids = [r[0] for r in scored]
@@ -59,7 +59,7 @@ class PersistentClient:
         class _Name:
             def __init__(self, name):
                 self.name = name
-        return [_Name(n) for n in self._store.keys()]
+        return [_Name(n) for n in self._store]
 
     def create_collection(self, name, metadata=None):
         col = _Collection(name, metadata)

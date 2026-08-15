@@ -5,10 +5,10 @@ quality signal."""
 
 
 def _words(text: str) -> set:
-    return set(w.strip(".,!?()[]").lower() for w in text.split() if len(w) > 3)
+    return {w.strip(".,!?()[]").lower() for w in text.split() if len(w) > 3}
 
 
-def evaluate(dataset, metrics, llm=None):
+def evaluate(dataset, metrics, llm=None):  # noqa: ARG001
     questions = dataset["question"]
     answers = dataset["answer"]
     contexts_list = dataset["contexts"]
@@ -18,7 +18,7 @@ def evaluate(dataset, metrics, llm=None):
     precision_scores = []
     recall_scores = []
 
-    for answer, contexts, gt in zip(answers, contexts_list, ground_truths):
+    for _answer, contexts, gt in zip(answers, contexts_list, ground_truths, strict=True):
         context_words = set()
         for c in contexts:
             context_words |= _words(c)

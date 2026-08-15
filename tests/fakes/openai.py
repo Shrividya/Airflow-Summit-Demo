@@ -21,7 +21,7 @@ class _EmbeddingsResponse:
 
 
 class _Embeddings:
-    def create(self, model, input, **kw):
+    def create(self, model, input, **kw):  # noqa: ARG002
         return _EmbeddingsResponse([_Embedding(_fake_embed(t)) for t in input])
 
 
@@ -41,7 +41,7 @@ class _ChatCompletion:
 
 
 class _Completions:
-    def create(self, model, messages, **kw):
+    def create(self, model, messages, **kw):  # noqa: ARG002
         prompt = messages[-1]["content"]
         return _ChatCompletion(f"[fake-answer grounded in {len(prompt)} chars of context]")
 
@@ -52,6 +52,6 @@ class _Chat:
 
 
 class OpenAI:
-    def __init__(self, *a, **kw):
+    def __init__(self, *a, **kw):  # noqa: ARG002
         self.embeddings = _Embeddings()
         self.chat = _Chat()

@@ -86,9 +86,10 @@ with DAG(
 
 
     @task
-    def retrieve_eval_contexts(manifest: dict) -> list[dict]:
+    def retrieve_eval_contexts(_manifest: dict) -> list[dict]:
         from include.ingest import STAGING_COLLECTION, retrieve
-        rows = [json.loads(line) for line in open(EVAL_DATASET_PATH) if line.strip()]
+        with open(EVAL_DATASET_PATH, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
         items = []
         for row in rows:
             hits = retrieve(row["question"], collection_name=STAGING_COLLECTION, k=4)
@@ -111,7 +112,7 @@ with DAG(
 
     @task
     def zip_generated_answers(items: list[dict], answers: list[str]) -> list[dict]:
-        return [{**item, "answer": answer} for item, answer in zip(items, answers)]
+        return [{**item, "answer": answer} for item, answer in zip(items, answers, strict=True)]
 
     @task.llm(
         llm_conn_id=GROUNDEDNESS_LLM_CONN_ID,
@@ -129,7 +130,7 @@ with DAG(
     def zip_groundedness_verdicts(items: list[dict], verdicts: list) -> list[dict]:
         def as_dict(v):
             return v if isinstance(v, dict) else v.model_dump()
-        return [{"question": item["question"], "verdict": as_dict(v)} for item, v in zip(items, verdicts)]
+        return [{"question": item["question"], "verdict": as_dict(v)} for item, v in zip(items, verdicts, strict=True)]
 
     def _alert_promotion_stalled(streak: int, results) -> None:
         failing = "; ".join(f"{r.name}: {r.detail}" for r in results if not r.passed)
