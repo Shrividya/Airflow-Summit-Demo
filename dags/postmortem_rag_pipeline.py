@@ -4,10 +4,9 @@ import json
 import os
 from datetime import datetime, timedelta
 
-from airflow.sdk import DAG, Asset, task
-from airflow.providers.standard.operators.hitl import HITLOperator
 from airflow.providers.slack.notifications.slack_webhook import SlackWebhookNotifier
-
+from airflow.providers.standard.operators.hitl import HITLOperator
+from airflow.sdk import DAG, Asset, task
 from include.guardrails import (
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
@@ -88,7 +87,7 @@ with DAG(
 
     @task
     def retrieve_eval_contexts(manifest: dict) -> list[dict]:
-        from include.ingest import retrieve, STAGING_COLLECTION
+        from include.ingest import STAGING_COLLECTION, retrieve
         rows = [json.loads(line) for line in open(EVAL_DATASET_PATH) if line.strip()]
         items = []
         for row in rows:
@@ -147,7 +146,10 @@ with DAG(
     @task.branch(**INFRA_TASK_RETRY_KWARGS)
     def evaluate_quality_gates(manifest: dict, generated_answers: list[dict], groundedness_verdicts: list[dict]) -> str:
         from include.evaluate import (
-            run_all_gates, record_manifest_history, record_promotion_outcome, BLOCKED_RUN_ALERT_THRESHOLD,
+            BLOCKED_RUN_ALERT_THRESHOLD,
+            record_manifest_history,
+            record_promotion_outcome,
+            run_all_gates,
         )
         from include.ingest import IngestManifest
 

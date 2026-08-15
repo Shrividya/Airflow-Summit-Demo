@@ -5,9 +5,8 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
-from include.ingest import IngestManifest, CHROMA_PATH
+from include.ingest import CHROMA_PATH, IngestManifest
 
 GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "meta-llama/Llama-3.3-70B-Instruct:novita")
 HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
@@ -41,10 +40,10 @@ class QualityGateResult:
     name: str
     passed: bool
     detail: str
-    metrics: Optional[dict] = None
+    metrics: dict | None = None
 
 
-def _load_previous_manifest() -> Optional[dict]:
+def _load_previous_manifest() -> dict | None:
     if not MANIFEST_HISTORY_PATH.exists():
         return None
     history = json.loads(MANIFEST_HISTORY_PATH.read_text())
@@ -212,11 +211,11 @@ def check_retrieval_quality(rows: list[dict]) -> QualityGateResult:
     """`rows` are dicts with question/contexts/ground_truth/answer, one per golden question."""
     import instructor
     from datasets import Dataset
+    from openai import OpenAI
     from ragas import evaluate
     from ragas.cache import DiskCacheBackend
-    from ragas.metrics import faithfulness, context_precision, context_recall
     from ragas.llms.base import InstructorLLM
-    from openai import OpenAI
+    from ragas.metrics import context_precision, context_recall, faithfulness
 
     questions = [r["question"] for r in rows]
     ground_truths = [r["ground_truth"] for r in rows]

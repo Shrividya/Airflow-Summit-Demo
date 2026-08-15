@@ -7,13 +7,14 @@ import glob
 import hashlib
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-from include.guardrails import scan_and_redact, has_hard_finding
-from huggingface_hub import InferenceClient
+
 import chromadb
+from huggingface_hub import InferenceClient
+
+from include.guardrails import has_hard_finding, scan_and_redact
 
 EMBEDDING_MODEL = os.environ.get("PM_RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 HF_TOKEN = os.environ.get("HF_TOKEN")
@@ -91,11 +92,11 @@ def embed_texts(texts: list[str], input_type: str = "document") -> list[list[flo
     return [list(map(float, row)) for row in embeddings]
 
 
-def get_chroma_client(path: str = CHROMA_PATH) -> "chromadb.ClientAPI":
+def get_chroma_client(path: str = CHROMA_PATH) -> chromadb.ClientAPI:
     return chromadb.PersistentClient(path=path)
 
 
-def _load_last_successful_manifest() -> Optional[dict]:
+def _load_last_successful_manifest() -> dict | None:
     """Mirrors include/evaluate.py's _load_previous_manifest (kept separate to
     avoid a circular import). manifest_history.json is only appended to after
     all quality gates pass, so this is always a known-good, promoted-to-prod
@@ -107,7 +108,7 @@ def _load_last_successful_manifest() -> Optional[dict]:
     return history[-1] if history else None
 
 
-def plan_incremental_ingest(source_dir: str, run_id: Optional[str] = None) -> dict:
+def plan_incremental_ingest(source_dir: str, run_id: str | None = None) -> dict:
     """ To re-ingest only the changes instead of the whole document set"""
     run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     docs = load_source_documents(source_dir)
@@ -247,7 +248,7 @@ def assemble_staging_index(plan: dict, embedded_docs: list[dict]) -> IngestManif
     return manifest
 
 
-def build_staging_index(source_dir: str, run_id: Optional[str] = None) -> IngestManifest:
+def build_staging_index(source_dir: str, run_id: str | None = None) -> IngestManifest:
     """Full rebuild: chunk + embed every postmortem into STAGING, ignoring any
     previous manifest. Kept for the first-ever run and for callers (tests, CLI)
     that want a from-scratch index; the DAG uses the incremental

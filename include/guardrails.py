@@ -4,7 +4,7 @@ GroundednessVerdict back the query-time @task.llm checks in the DAGs."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import timedelta
 
 from pydantic import BaseModel, Field

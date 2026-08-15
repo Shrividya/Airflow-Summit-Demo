@@ -4,14 +4,14 @@ Uses hand-written fake chromadb / openai / huggingface_hub / datasets / ragas
 / airflow.sdk modules (see tests/fakes/) so include/ingest.py and
 include/evaluate.py run end-to-end without network access or real dependencies.
 """
+import copy
 import json
 import os
-import sys
 import shutil
-import tempfile
-import subprocess
 import sqlite3
-import copy
+import subprocess
+import sys
+import tempfile
 
 FAKES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fakes")
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -40,11 +40,15 @@ def check(name, condition, detail=""):
         print(f"  [FAIL] {name} -- {detail}")
 
 
-from include.ingest import (
-    build_staging_index, STAGING_COLLECTION, PROD_COLLECTION,
-    get_chroma_client, retrieve, promote_staging_to_prod
-)
 import include.query as query_mod
+from include.ingest import (
+    PROD_COLLECTION,
+    STAGING_COLLECTION,
+    build_staging_index,
+    get_chroma_client,
+    promote_staging_to_prod,
+    retrieve,
+)
 
 print("=== 1. build_staging_index ===")
 
@@ -100,9 +104,13 @@ check(
 
 print("\n=== 2. quality gates against a fresh baseline (no prior history) ===")
 from include.evaluate import (
-    check_chunking_regression, check_embedding_model_drift, check_partial_reindex,
-    check_pii_hard_block, check_answer_guardrails, record_manifest_history,
     MANIFEST_HISTORY_PATH,
+    check_answer_guardrails,
+    check_chunking_regression,
+    check_embedding_model_drift,
+    check_partial_reindex,
+    check_pii_hard_block,
+    record_manifest_history,
 )
 
 r1 = check_chunking_regression(manifest1)

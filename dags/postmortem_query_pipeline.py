@@ -10,7 +10,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import DAG, Param, get_current_context, task
-
 from include.guardrails import (
     CACHED_INSTRUCTIONS_SETTINGS,
     GROUNDEDNESS_GUARDRAIL_SYSTEM_PROMPT,
@@ -88,7 +87,7 @@ with DAG(
 
     @task
     def retrieve_context(question: str) -> dict:
-        from include.ingest import retrieve, PROD_COLLECTION
+        from include.ingest import PROD_COLLECTION, retrieve
 
         hits = retrieve(question, collection_name=PROD_COLLECTION, k=4)
         if not hits:
