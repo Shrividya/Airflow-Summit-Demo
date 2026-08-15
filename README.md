@@ -1,4 +1,4 @@
-# Postmortem RAG: Quality-Gated Ingestion on Airflow 3
+# Postmortem RAG: Quality-Gated Ingestion on Airflow 3 with Astro CLI
 
 Reference implementation for Airflow Summit 2026. Incident postmortems are
 ingested into a RAG index that engineers query for root causes and
