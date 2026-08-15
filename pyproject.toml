@@ -15,7 +15,7 @@ select = [
     "SIM",    # flake8-simplify
 ]
 ignore = [
-    "E501",   # line too long (handled by formatter)
+    "E501"   # line too long (handled by formatter)
 ]
 
 [tool.ruff.lint.isort]
