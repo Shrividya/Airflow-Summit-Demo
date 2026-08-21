@@ -8,7 +8,7 @@ from pathlib import Path
 
 from include.ingest import CHROMA_PATH, IngestManifest
 
-GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "meta-llama/Llama-3.3-70B-Instruct:novita")
+GENERATION_MODEL = os.environ.get("PM_RAG_GENERATION_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
 HF_BASE_URL = os.environ.get("HF_BASE_URL", "https://router.huggingface.co/v1")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 RAGAS_CACHE_DIR = os.environ.get("PM_RAG_RAGAS_CACHE_DIR", "/tmp/postmortem-rag-ragas-cache")

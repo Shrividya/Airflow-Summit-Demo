@@ -97,8 +97,7 @@ def get_chroma_client(path: str = CHROMA_PATH) -> chromadb.ClientAPI:
 
 
 def _load_last_successful_manifest() -> dict | None:
-    """Mirrors include/evaluate.py's _load_previous_manifest (kept separate to
-    avoid a circular import). manifest_history.json is only appended to after
+    """manifest_history.json is only appended to after
     all quality gates pass, so this is always a known-good, promoted-to-prod
     state -- safe to diff against and to copy reused chunks out of PROD_COLLECTION."""
     history_path = Path(CHROMA_PATH) / "manifest_history.json"
@@ -119,9 +118,6 @@ def plan_incremental_ingest(source_dir: str, run_id: str | None = None) -> dict:
     current_hashes = {doc_id: hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] for doc_id, text in docs.items()}
     prev = _load_last_successful_manifest()
     prev_hashes = prev["source_doc_hashes"] if prev else {}
-    # embedding model OR chunking params changing invalidates every existing vector/chunk
-    # boundary, not just the changed docs' -- force a full re-embed rather than silently
-    # mixing old and new chunk boundaries across reused vs. re-embedded docs.
     force_full_reembed = bool(prev) and (
         prev["embedding_model"] != EMBEDDING_MODEL
         or prev["chunk_size"] != CHUNK_SIZE
