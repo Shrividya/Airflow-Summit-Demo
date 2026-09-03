@@ -84,3 +84,6 @@ streamlit run streamlit_app.py
   them to block automatically.
 - Point `security_incident_review`'s Slack alert and response timeout at
   your real on-call/incident-response process.
+
+## Demo slides
+https://docs.google.com/presentation/d/17nB-ifwDGb5fM_XAuvqdfVzb9kvKIoP4
